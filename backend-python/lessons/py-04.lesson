@@ -1,0 +1,207 @@
+%%% meta
+id: py-04
+title: Class, dataclass và dunder method
+level: core
+topic: OOP
+order: 4
+%%% theory
+## dataclass
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass(frozen=True)          # frozen: bất biến, tự có __hash__
+class Money:
+    amount: Decimal
+    currency: str = "VND"
+
+    def __post_init__(self):      # validate sau khi gán field
+        if self.amount < 0:
+            raise ValueError("amount >= 0")
+```
+
+`@dataclass` tự sinh `__init__`, `__repr__` và `__eq__`. Field có giá trị default là object có thể sửa thì dùng `field(default_factory=list)`.
+
+Muốn **chuẩn hoá** field trong một frozen dataclass thì gọi `object.__setattr__(self, "amount", ...)` bên trong `__post_init__`.
+
+## Dunder method: cho object "nói chuyện" với cú pháp Python
+
+| Method | Dùng khi |
+|---|---|
+| `__str__` / `__repr__` | `str(x)` / hiển thị khi debug |
+| `__eq__`, `__lt__` | `==`, `<`, `sorted` |
+| `__add__`, `__mul__` | `a + b`, `a * 3` |
+| `__len__` | `len(x)` |
+| `__iter__` | `for item in x` |
+| `__contains__` | `"sku" in cart` |
+| `__getitem__` | `x[key]` |
+
+Nếu `__add__` không xử lý được kiểu bên kia thì trả về `NotImplemented` (chứ không ném lỗi), để Python còn thử cách khác.
+
+## Decimal cho tiền
+
+```python
+from decimal import Decimal, ROUND_HALF_UP
+Decimal("10.5").quantize(Decimal("0.01"), ROUND_HALF_UP)   # Decimal('10.50')
+```
+
+Luôn tạo Decimal **từ chuỗi**. Viết `Decimal(0.1)` sẽ mang theo cả sai số của float.
+%%% quiz
+? `@dataclass(frozen=True)` mang lại điều gì?
+* Object bất biến và hash được (làm key của dict được)
+- Chạy nhanh gấp đôi
+- Tự lưu vào DB
+? Để `len(cart)` hoạt động, cần định nghĩa method nào?
+- size()
+* __len__
+- __count__
+%%% hints
+- Trong `__post_init__`: kiểm tra amount >= 0 và currency có 3 chữ in hoa, rồi `object.__setattr__(self, "amount", Decimal(self.amount).quantize(...))`.
+- `__add__`: nếu `other` không phải Money thì `return NotImplemented`; khác currency thì ném ValueError.
+- Cart: lưu `dict[sku, (Money, qty)]`; `__iter__` trả `iter(self._items.items())`.
+%%% starter
+from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
+
+
+@dataclass(frozen=True)
+class Money:
+    amount: Decimal
+    currency: str = "USD"
+
+    def __post_init__(self):
+        pass  # TODO: validate + chuẩn hoá 2 chữ số thập phân
+
+    # TODO: __add__, __mul__ (với int), __str__ -> "10.50 USD"
+
+
+class Cart:
+    def __init__(self):
+        self._items = {}  # sku -> (Money đơn giá, qty)
+
+    def add(self, sku: str, price: Money, qty: int = 1) -> None:
+        """Thêm; sku đã có thì cộng dồn qty. qty <= 0 -> ValueError."""
+        pass  # TODO
+
+    def remove(self, sku: str) -> None:
+        """Không có sku -> KeyError."""
+        pass  # TODO
+
+    def total(self) -> Money:
+        return Money(Decimal("0"))  # TODO
+
+    # TODO: __len__ (tổng số lượng), __contains__, __iter__ (sku, qty)
+%%% tests
+from decimal import Decimal
+
+from checker import test, eq, ok, raises
+from solution import *
+
+
+@test("Money chuẩn hoá và __str__")
+def _():
+    eq("10.50 USD", str(Money(Decimal("10.5"))))
+    eq(Money(Decimal("10.5")), Money(Decimal("10.50")))
+
+
+@test("Money validate")
+def _():
+    raises(ValueError, Money, Decimal("-1"))
+    raises(ValueError, Money, Decimal("1"), "usd")
+
+
+@test("Money + và *")
+def _():
+    a = Money(Decimal("1.25"))
+    eq("3.75 USD", str(a * 3))
+    eq("2.50 USD", str(a + a))
+    raises(ValueError, lambda: a + Money(Decimal("1"), "EUR"))
+    raises(TypeError, lambda: a + 5)
+
+
+@test("Money hash được (frozen)")
+def _():
+    eq(1, len({Money(Decimal("1")), Money(Decimal("1.00"))}))
+
+
+@test("Cart cộng dồn, len, in, total")
+def _():
+    c = Cart()
+    c.add("A", Money(Decimal("10")), 2)
+    c.add("B", Money(Decimal("2.5")))
+    c.add("A", Money(Decimal("10")), 1)
+    eq(4, len(c))
+    ok("A" in c and "Z" not in c, "__contains__ sai")
+    eq("32.50 USD", str(c.total()))
+    eq([("A", 3), ("B", 1)], list(c))
+
+
+@test("Cart remove và validate")
+def _():
+    c = Cart()
+    raises(ValueError, c.add, "A", Money(Decimal("1")), 0)
+    c.add("A", Money(Decimal("1")))
+    c.remove("A")
+    eq(0, len(c))
+    raises(KeyError, c.remove, "A")
+%%% solution
+from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
+
+
+@dataclass(frozen=True)
+class Money:
+    amount: Decimal
+    currency: str = "USD"
+
+    def __post_init__(self):
+        amount = Decimal(self.amount)
+        if amount < 0:
+            raise ValueError("amount phải >= 0")
+        if not (isinstance(self.currency, str) and len(self.currency) == 3 and self.currency.isupper()):
+            raise ValueError(f"currency không hợp lệ: {self.currency!r}")
+        object.__setattr__(self, "amount", amount.quantize(Decimal("0.01"), ROUND_HALF_UP))
+
+    def __add__(self, other):
+        if not isinstance(other, Money):
+            return NotImplemented
+        if other.currency != self.currency:
+            raise ValueError("khác loại tiền")
+        return Money(self.amount + other.amount, self.currency)
+
+    def __mul__(self, factor):
+        if not isinstance(factor, int):
+            return NotImplemented
+        return Money(self.amount * factor, self.currency)
+
+    def __str__(self):
+        return f"{self.amount} {self.currency}"
+
+
+class Cart:
+    def __init__(self):
+        self._items = {}
+
+    def add(self, sku: str, price: Money, qty: int = 1) -> None:
+        if qty <= 0:
+            raise ValueError("qty phải > 0")
+        _, cur = self._items.get(sku, (price, 0))
+        self._items[sku] = (price, cur + qty)
+
+    def remove(self, sku: str) -> None:
+        del self._items[sku]
+
+    def total(self) -> Money:
+        result = Money(Decimal("0"))
+        for price, qty in self._items.values():
+            result = result + price * qty
+        return result
+
+    def __len__(self):
+        return sum(qty for _, qty in self._items.values())
+
+    def __contains__(self, sku):
+        return sku in self._items
+
+    def __iter__(self):
+        return ((sku, qty) for sku, (_, qty) in self._items.items())

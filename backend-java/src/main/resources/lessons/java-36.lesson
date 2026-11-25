@@ -1,0 +1,234 @@
+%%% meta
+id: java-36
+title: Design Patterns — Factory Method và Adapter
+level: intermediate
+topic: Design Patterns
+order: 36
+%%% theory
+## Factory: tách việc "tạo cái gì" khỏi "dùng nó"
+
+Code đầy `if (channel.equals("sms")) new SmsNotifier(...) else if ...` ở nhiều chỗ thì mỗi lần thêm kênh mới phải sửa khắp nơi, tức là vi phạm **Open/Closed**. Factory gom việc khởi tạo về **một chỗ**.
+
+- **Simple factory / registry**: `NotifierFactory.create("sms")` tra trong một `Map<String, Supplier<Notifier>>`. Thêm kênh mới chỉ cần `register("zalo", ZaloNotifier::new)`, không phải sửa code cũ.
+- **Factory Method** (GoF): lớp cha định nghĩa thuật toán và để **lớp con quyết định** tạo object nào:
+
+```java
+abstract class ReportExporter {
+    final byte[] export(Report r) {           // thuật toán chung
+        Writer w = createWriter();            // ← factory method
+        w.header(r); w.rows(r); return w.bytes();
+    }
+    protected abstract Writer createWriter();
+}
+class CsvExporter extends ReportExporter { protected Writer createWriter() { return new CsvWriter(); } }
+```
+
+- Trong Spring, chính container đã là một factory lớn. Inject `Map<String, Notifier>` thì Spring tự gom mọi bean `Notifier` theo tên bean. Hay gặp nhất là cách dùng **strategy + map** như vậy.
+
+## Adapter: nối hai interface không khớp nhau
+
+Hệ thống của bạn có interface `Notifier.send(to, message)`. SDK SMS cũ của nhà mạng lại có `int sendSms(String digitsOnly, String text, boolean unicode)` và báo lỗi bằng **mã âm**. Bạn **không sửa được SDK**, vì vậy viết một **Adapter**:
+
+```
+OrderService ──▶ Notifier (interface của ta) ◀── SmsAdapter ──▶ LegacySmsClient (SDK bên thứ 3)
+```
+
+Adapter làm ba việc:
+1. **Chuyển dữ liệu vào**: chuẩn hoá số điện thoại, tự bật cờ unicode khi có tiếng Việt.
+2. **Chuyển kết quả ra**: mã âm thì ném exception có nghĩa, mã dương thì trả id theo định dạng của ta.
+3. **Cô lập**: lõi hệ thống không biết SDK tồn tại. Sau này đổi nhà cung cấp thì chỉ phải viết một adapter mới.
+
+Đây cũng chính là *adapter* trong kiến trúc Ports & Adapters.
+
+## Bài tập
+
+1. `SmsAdapter implements Notifier`, bọc `LegacySmsClient` (cho sẵn, không được sửa).
+2. `NotifierFactory`: đăng ký kênh qua `Supplier`, không phân biệt hoa thường, mỗi lần `create` trả một instance mới.
+%%% quiz
+? Lợi ích chính của registry factory `Map<String, Supplier<Notifier>>` so với chuỗi if/else là gì?
+* Thêm kênh mới chỉ cần đăng ký, không phải sửa code cũ (Open/Closed)
+- Chạy nhanh hơn if/else
+- Không cần interface nữa
+? Adapter được dùng khi nào?
+- Khi cần đúng một instance cho cả ứng dụng
+* Khi cần dùng một class có interface không khớp với interface hệ thống mong đợi, mà không sửa được class đó
+- Khi muốn thêm tính năng vào object lúc chạy
+? Trong Factory Method (GoF), ai quyết định tạo object cụ thể nào?
+- Client gọi `new` trực tiếp
+* Lớp con override factory method
+- Spring container
+? SDK báo lỗi bằng mã số âm. Adapter tốt nên xử lý thế nào?
+- Trả nguyên mã số cho caller tự xử lý
+* Dịch sang exception có ý nghĩa trong miền của ta
+- Bỏ qua lỗi
+%%% hints
+- Chuẩn hoá số điện thoại: `to.replaceAll("[^0-9]", "")`. Nếu bắt đầu bằng `0` thì đổi thành `84` + phần còn lại.
+- Cờ unicode: `message.chars().anyMatch(ch -> ch > 127)`.
+- `int code = client.sendSms(...)`. Nếu `code < 0` thì ném `NotificationException("SMS lỗi mã " + code)`, ngược lại trả `"sms-" + code`.
+- Factory: dùng `Map<String, Supplier<Notifier>>`, key là `channel.toLowerCase()`. Kênh lạ thì ném `IllegalArgumentException`. `create` gọi `supplier.get()` để mỗi lần có instance mới.
+%%% starter
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Supplier;
+
+/** Interface của hệ thống ta. Trả id tin nhắn. */
+interface Notifier {
+    String send(String to, String message);
+}
+
+class NotificationException extends RuntimeException {
+    NotificationException(String message) { super(message); }
+}
+
+/** SDK nhà mạng (CHO SẴN, KHÔNG ĐƯỢC SỬA). Trả id > 0 nếu gửi được, mã âm nếu lỗi. */
+class LegacySmsClient {
+    String lastPhone;
+    String lastText;
+    boolean lastUnicode;
+    private int seq = 1000;
+
+    int sendSms(String phoneDigitsOnly, String text, boolean unicode) {
+        lastPhone = phoneDigitsOnly;
+        lastText = text;
+        lastUnicode = unicode;
+        if (!phoneDigitsOnly.matches("84[0-9]{9}")) return -2;   // số không hợp lệ
+        if (text.isEmpty()) return -1;                           // nội dung rỗng
+        return ++seq;
+    }
+}
+
+/**
+ * Adapter: "0912 345 678", "+84 912-345-678" → "84912345678"; unicode = true nếu có ký tự ngoài ASCII;
+ * mã âm → NotificationException("SMS lỗi mã -2"); id dương → "sms-<id>".
+ */
+class SmsAdapter implements Notifier {
+    private final LegacySmsClient client;
+
+    SmsAdapter(LegacySmsClient client) { this.client = client; }
+
+    @Override
+    public String send(String to, String message) {
+        return ""; // TODO
+    }
+}
+
+/** Đăng ký kênh → Supplier; create("SMS") không phân biệt hoa thường; kênh lạ → IllegalArgumentException. */
+class NotifierFactory {
+    void register(String channel, Supplier<Notifier> supplier) {
+        // TODO
+    }
+
+    Notifier create(String channel) {
+        throw new IllegalArgumentException("TODO"); // TODO
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+
+class Tests {
+    static void run(T t) {
+        t.test("Adapter chuẩn hoá số điện thoại", () -> {
+            LegacySmsClient c = new LegacySmsClient();
+            SmsAdapter a = new SmsAdapter(c);
+            a.send("0912 345 678", "Hi");
+            T.eq("84912345678", c.lastPhone);
+            a.send("+84 912-345-679", "Hi");
+            T.eq("84912345679", c.lastPhone);
+        });
+        t.test("Adapter trả id theo định dạng của hệ thống", () -> {
+            SmsAdapter a = new SmsAdapter(new LegacySmsClient());
+            T.eq("sms-1001", a.send("0912345678", "Hi"));
+            T.eq("sms-1002", a.send("0912345678", "Hi"));
+        });
+        t.test("Adapter bật unicode khi có tiếng Việt", () -> {
+            LegacySmsClient c = new LegacySmsClient();
+            SmsAdapter a = new SmsAdapter(c);
+            a.send("0912345678", "Ma OTP: 123");
+            T.ok(!c.lastUnicode, "ASCII thì unicode = false");
+            a.send("0912345678", "Mã OTP của bạn: 123");
+            T.ok(c.lastUnicode, "có dấu thì unicode = true");
+            T.eq("Mã OTP của bạn: 123", c.lastText);
+        });
+        t.test("Adapter dịch mã lỗi sang NotificationException", () -> {
+            SmsAdapter a = new SmsAdapter(new LegacySmsClient());
+            NotificationException e = T.throwsEx(NotificationException.class, () -> a.send("123", "Hi"));
+            T.ok(e.getMessage().contains("-2"), "message nên chứa mã lỗi: " + e.getMessage());
+            T.throwsEx(NotificationException.class, () -> a.send("0912345678", ""));
+        });
+        t.test("Factory: đăng ký và tạo theo kênh, không phân biệt hoa thường", () -> {
+            List<String> sent = new ArrayList<>();
+            NotifierFactory f = new NotifierFactory();
+            f.register("sms", () -> new SmsAdapter(new LegacySmsClient()));
+            f.register("Email", () -> (to, msg) -> { sent.add(to + ":" + msg); return "mail-1"; });
+            T.eq("sms-1001", f.create("SMS").send("0912345678", "x"));
+            T.eq("mail-1", f.create("email").send("a@x.com", "hello"));
+            T.eq(List.of("a@x.com:hello"), sent);
+        });
+        t.test("Factory: mỗi lần create là một instance mới", () -> {
+            NotifierFactory f = new NotifierFactory();
+            f.register("sms", () -> new SmsAdapter(new LegacySmsClient()));
+            T.ok(f.create("sms") != f.create("sms"), "create phải gọi supplier mỗi lần");
+        });
+        t.test("Factory: kênh chưa đăng ký → IllegalArgumentException", () ->
+                T.throwsEx(IllegalArgumentException.class, () -> new NotifierFactory().create("fax")));
+    }
+}
+%%% solution
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Supplier;
+
+interface Notifier {
+    String send(String to, String message);
+}
+
+class NotificationException extends RuntimeException {
+    NotificationException(String message) { super(message); }
+}
+
+class LegacySmsClient {
+    String lastPhone;
+    String lastText;
+    boolean lastUnicode;
+    private int seq = 1000;
+
+    int sendSms(String phoneDigitsOnly, String text, boolean unicode) {
+        lastPhone = phoneDigitsOnly;
+        lastText = text;
+        lastUnicode = unicode;
+        if (!phoneDigitsOnly.matches("84[0-9]{9}")) return -2;
+        if (text.isEmpty()) return -1;
+        return ++seq;
+    }
+}
+
+class SmsAdapter implements Notifier {
+    private final LegacySmsClient client;
+
+    SmsAdapter(LegacySmsClient client) { this.client = client; }
+
+    @Override
+    public String send(String to, String message) {
+        String digits = to.replaceAll("[^0-9]", "");
+        if (digits.startsWith("0")) digits = "84" + digits.substring(1);
+        boolean unicode = message.chars().anyMatch(ch -> ch > 127);
+        int code = client.sendSms(digits, message, unicode);
+        if (code < 0) throw new NotificationException("SMS lỗi mã " + code);
+        return "sms-" + code;
+    }
+}
+
+class NotifierFactory {
+    private final Map<String, Supplier<Notifier>> registry = new HashMap<>();
+
+    void register(String channel, Supplier<Notifier> supplier) {
+        registry.put(channel.toLowerCase(), supplier);
+    }
+
+    Notifier create(String channel) {
+        Supplier<Notifier> s = registry.get(channel.toLowerCase());
+        if (s == null) throw new IllegalArgumentException("Kênh chưa hỗ trợ: " + channel);
+        return s.get();
+    }
+}

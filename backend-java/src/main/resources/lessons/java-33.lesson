@@ -1,0 +1,96 @@
+%%% meta
+id: java-33
+title: CI/CD — Static analysis, migration khi deploy và security scanning
+level: intermediate
+topic: CI/CD
+order: 33
+%%% theory
+## Pipeline điển hình
+
+```
+push/PR → build → unit test → static analysis → integration test (Testcontainers)
+        → build image → scan image → push registry
+        → deploy staging → smoke test → (duyệt) → deploy production → theo dõi
+```
+
+Nguyên tắc:
+- **Fail fast**: bước nhanh và rẻ chạy trước. Lint chỉ mất vài giây, không để nó chạy sau integration test mất 10 phút.
+- **Build một lần, deploy nhiều nơi**: cùng một image (cùng digest) đi từ staging lên production. Khác nhau giữa các môi trường chỉ nằm ở cấu hình và secret.
+- Pipeline là code (`.github/workflows/*.yml`), được review như code.
+- Nhánh `main` luôn ở trạng thái deploy được. Bật branch protection: bắt buộc qua CI và có review mới được merge.
+
+## Static analysis
+
+| Công cụ | Bắt được gì |
+|---|---|
+| Compiler `-Xlint:all -Werror` | Cảnh báo của compiler |
+| **Checkstyle**, Spotless | Quy ước định dạng code |
+| **SpotBugs**, **Error Prone**, PMD | Lỗi tiềm ẩn: NPE, `equals` sai, tài nguyên không đóng |
+| **SonarQube** | Tổng hợp: bug, code smell, độ phủ test, *quality gate* |
+| JaCoCo | Độ phủ test, có thể đặt ngưỡng tối thiểu |
+
+Đặt **quality gate** áp dụng cho **code mới**, ví dụ "không có bug mới, độ phủ code mới ≥ 80%", thay vì bắt sửa toàn bộ nợ cũ một lần.
+
+## Migration database khi deploy
+
+Lúc deploy kiểu rolling, **phiên bản cũ và mới cùng chạy** trên cùng một DB. Vì vậy migration phải **tương thích với cả hai** phiên bản. Dùng mẫu **expand → migrate → contract**:
+
+Ví dụ đổi tên cột `fullname` thành `display_name`:
+1. **Expand** (release N): thêm cột `display_name` (cho phép NULL). Code mới ghi vào **cả hai** cột, đọc cột mới và rơi về cột cũ nếu cột mới trống.
+2. **Migrate**: backfill dữ liệu cũ theo từng lô nhỏ, tránh khoá bảng.
+3. **Contract** (release N+1 hoặc N+2, khi không còn bản cũ nào chạy): xoá cột `fullname`.
+
+Những việc **không được** làm trong một bước: đổi tên hay xoá cột mà code đang chạy vẫn dùng, hoặc thêm cột `NOT NULL` không có giá trị mặc định.
+
+Thêm vài điều cần nhớ:
+- Flyway chạy lúc khởi động hoặc trong một job riêng trước khi deploy. **Đừng sửa** file migration đã chạy, vì sẽ lỗi checksum. Muốn đổi gì thì viết file migration mới.
+- `ALTER` bảng lớn trên MySQL: dùng `ALGORITHM=INSTANT/INPLACE`, hoặc công cụ online như gh-ost hay pt-online-schema-change.
+- Luôn có kế hoạch rollback. Thường cách thực tế hơn là roll-forward bằng một migration sửa lỗi, vì DDL khó đảo ngược.
+
+## Security trong pipeline
+
+| Loại | Công cụ | Quét gì |
+|---|---|---|
+| **Secret scanning** | gitleaks, GitHub secret scanning | Khoá hoặc mật khẩu lỡ commit lên |
+| **SCA** (dependency) | OWASP Dependency-Check, Dependabot, Snyk | Thư viện có CVE |
+| **SAST** | Semgrep, CodeQL, Sonar | Lỗ hổng trong code (SQL injection, XSS) |
+| **Image scan** | Trivy, Grype | Lỗ hổng trong OS và gói của image |
+| **DAST** | OWASP ZAP | Tấn công thử vào ứng dụng đang chạy ở staging |
+
+Thêm vài nguyên tắc:
+- Secret của CI đặt trong *Secrets* của GitHub hoặc GitLab. Dùng **OIDC** để lấy credential cloud tạm thời thay vì khoá dài hạn.
+- Ghim action theo commit SHA (`uses: actions/checkout@<sha>`) để chống tấn công chuỗi cung ứng. Cấp `permissions:` tối thiểu cho mỗi workflow.
+- Đặt ngưỡng: CVE mức *critical* hoặc *high* có bản sửa thì làm build fail.
+%%% quiz
+? Vì sao nên "build một lần, deploy nhiều nơi"?
+* Để thứ chạy trên production đúng là thứ đã được test ở staging, cùng một image digest
+- Để tiết kiệm dung lượng registry
+- Vì Docker bắt buộc
+? Deploy rolling, cần đổi tên cột `fullname` thành `display_name`. Cách an toàn là gì?
+- Một migration `RENAME COLUMN` trong cùng release
+* Expand (thêm cột mới, ghi cả hai cột), backfill, rồi contract (xoá cột cũ) ở release sau
+- Tắt hệ thống rồi đổi tên
+? Flyway báo checksum mismatch cho file V5 đã chạy trên production. Nguyên nhân thường gặp là gì?
+* Ai đó đã sửa nội dung file migration đã chạy. Nên viết migration mới thay vì sửa file cũ
+- DB bị hỏng
+- Thiếu index
+? Công cụ nào phát hiện thư viện có lỗ hổng CVE đã biết?
+- Checkstyle
+* SCA như OWASP Dependency-Check hay Dependabot
+- JaCoCo
+? Vì sao nên ghim GitHub Action theo commit SHA thay vì theo tag `@v4`?
+* Tag có thể bị di chuyển sang code độc hại. SHA thì bất biến
+- Vì SHA chạy nhanh hơn
+- Vì tag không hoạt động
+? Nên xếp các bước CI thế nào?
+* Bước nhanh và rẻ (lint, unit test) trước, bước chậm (integration, e2e) sau
+- Bước chậm trước để phát hiện lỗi lớn sớm
+- Thứ tự không quan trọng
+%%% hints
+- Thêm vào `backend-java/pom.xml` plugin `spotbugs-maven-plugin` và `jacoco-maven-plugin` (đặt ngưỡng 70%), rồi chạy `mvn verify`.
+- Viết một workflow GitHub Actions gồm các job build-test, rồi build image, rồi `aquasecurity/trivy-action` quét image và fail khi có CVE mức CRITICAL.
+- Thực hành expand/contract với Flyway: V3 thêm cột mới, V4 backfill, V5 xoá cột cũ (chạy ở release sau). Ghi lại phiên bản code nào chạy được với phiên bản schema nào.
+- Chạy `gitleaks detect` trên repo của bạn.
+%%% starter
+%%% tests
+%%% solution

@@ -1,0 +1,143 @@
+%%% meta
+id: java-01
+title: Kiểu dữ liệu, String và vòng lặp
+level: core
+topic: Cú pháp cơ bản
+order: 1
+%%% theory
+## Kiểu nguyên thủy và kiểu tham chiếu
+
+| Kiểu | Kích thước | Ghi chú |
+|---|---|---|
+| `int` | 32 bit | khoảng ±2,1 tỷ, **tràn số im lặng** |
+| `long` | 64 bit | dùng cho id, timestamp, tiền tính bằng đồng |
+| `double` | 64 bit | **không dùng cho tiền** (0.1 + 0.2 ≠ 0.3) → dùng `BigDecimal` |
+| `boolean`, `char` | | `char` là 1 đơn vị UTF-16 |
+
+`String`, mảng, mọi object là **kiểu tham chiếu**: biến chỉ giữ địa chỉ.
+
+## So sánh String: `==` và `equals`
+
+```java
+String a = "hi";
+String b = new String("hi");
+a == b;        // false: khác object
+a.equals(b);   // true: cùng nội dung
+```
+
+Luôn so sánh nội dung bằng `equals`. Nếu biến có thể null, đặt hằng số lên trước: `"admin".equals(role)`.
+
+## String là bất biến (immutable)
+
+Mỗi phép `+` tạo một String mới. Nếu nối trong vòng lặp, dùng `StringBuilder`:
+
+```java
+StringBuilder sb = new StringBuilder();
+for (int i = 0; i < 3; i++) sb.append(i).append(',');
+String s = sb.toString(); // "0,1,2,"
+```
+
+## Các hàm hay dùng
+
+`length()`, `charAt(i)`, `substring(a, b)`, `indexOf`, `trim()`/`strip()`, `toLowerCase()`, `split(regex)`, `isBlank()`, `Character.isLetterOrDigit(c)`.
+
+## Cách làm bài
+
+Viết các hàm `static` trong `class Solution`. Bấm **Chạy test** để chấm. Bấm **Chạy** để thực thi hàm `main`, nếu bạn có viết.
+%%% quiz
+? `"abc" == new String("abc")` cho kết quả gì?
+- true
+* false
+- Lỗi biên dịch
+> `new String` luôn tạo object mới, còn `==` so sánh địa chỉ.
+? Kiểu nào nên dùng để lưu số tiền 19.99?
+- double
+- float
+* BigDecimal
+> Số thực nhị phân không biểu diễn chính xác được 0.1, nên tính tiền sẽ sai lệch.
+%%% hints
+- isPalindrome: dùng hai chỉ số `i` từ đầu và `j` từ cuối, bỏ qua ký tự không phải chữ hoặc số, so sánh `Character.toLowerCase`.
+- compress: duyệt chuỗi, đếm số ký tự lặp liên tiếp, nối vào `StringBuilder`; nếu kết quả dài hơn chuỗi gốc thì trả chuỗi gốc.
+- Nhớ xử lý chuỗi rỗng.
+%%% starter
+class Solution {
+    /** Đọc xuôi và ngược giống nhau, chỉ xét chữ/số, không phân biệt hoa thường. "A man, a plan" ... */
+    static boolean isPalindrome(String s) {
+        // TODO
+        return false;
+    }
+
+    /** Nén chuỗi: "aaabcc" -> "a3b1c2". Nếu kết quả DÀI HƠN chuỗi gốc thì trả chuỗi gốc. */
+    static String compress(String s) {
+        // TODO
+        return s;
+    }
+
+    /** Đếm số từ (phân tách bởi một hoặc nhiều khoảng trắng). "  hello   world " -> 2 */
+    static int countWords(String s) {
+        // TODO
+        return 0;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(isPalindrome("A man, a plan, a canal: Panama"));
+        System.out.println(compress("aaabcc"));
+    }
+}
+%%% tests
+class Tests {
+    static void run(T t) {
+        t.test("isPalindrome: câu có dấu câu", () -> T.eq(true, Solution.isPalindrome("A man, a plan, a canal: Panama")));
+        t.test("isPalindrome: không đối xứng", () -> T.eq(false, Solution.isPalindrome("race a car")));
+        t.test("isPalindrome: chuỗi rỗng / chỉ dấu câu", () -> {
+            T.eq(true, Solution.isPalindrome(""));
+            T.eq(true, Solution.isPalindrome(" .,"));
+        });
+        t.test("compress: cơ bản", () -> T.eq("a3b1c2", Solution.compress("aaabcc")));
+        t.test("compress: dài hơn thì giữ nguyên", () -> T.eq("abc", Solution.compress("abc")));
+        t.test("compress: chuỗi rỗng", () -> T.eq("", Solution.compress("")));
+        t.test("countWords: nhiều khoảng trắng", () -> T.eq(2, Solution.countWords("  hello   world ")));
+        t.test("countWords: rỗng / toàn khoảng trắng", () -> {
+            T.eq(0, Solution.countWords(""));
+            T.eq(0, Solution.countWords("    "));
+        });
+    }
+}
+%%% solution
+class Solution {
+    static boolean isPalindrome(String s) {
+        int i = 0, j = s.length() - 1;
+        while (i < j) {
+            char a = s.charAt(i), b = s.charAt(j);
+            if (!Character.isLetterOrDigit(a)) { i++; continue; }
+            if (!Character.isLetterOrDigit(b)) { j--; continue; }
+            if (Character.toLowerCase(a) != Character.toLowerCase(b)) return false;
+            i++;
+            j--;
+        }
+        return true;
+    }
+
+    static String compress(String s) {
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            int j = i;
+            while (j < s.length() && s.charAt(j) == c) j++;
+            sb.append(c).append(j - i);
+            i = j;
+        }
+        return sb.length() <= s.length() ? sb.toString() : s;
+    }
+
+    static int countWords(String s) {
+        String t = s.strip();
+        return t.isEmpty() ? 0 : t.split("\\s+").length;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(isPalindrome("A man, a plan, a canal: Panama"));
+        System.out.println(compress("aaabcc"));
+    }
+}

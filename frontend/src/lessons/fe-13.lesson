@@ -1,0 +1,218 @@
+%%% meta
+id: fe-13
+title: useReducer — giỏ hàng với state phức tạp
+level: advanced
+topic: React
+order: 13
+%%% theory
+## Khi nào dùng useReducer thay cho useState?
+
+- State có **nhiều field liên quan** đến nhau: items, mã giảm giá, tổng tiền…
+- Có **nhiều cách** để cập nhật state: thêm, xoá, đổi số lượng, áp mã, xoá hết.
+- Muốn **test logic** mà không cần render UI.
+
+```jsx
+function reducer(state, action) {
+  switch (action.type) {
+    case 'add': return { ...state, items: [...state.items, action.item] };
+    default: return state;
+  }
+}
+const [state, dispatch] = useReducer(reducer, initialState);
+dispatch({ type: 'add', item });
+```
+
+## Reducer phải **thuần**
+
+- Cùng `state` và `action` thì luôn ra cùng kết quả.
+- **Không sửa** state cũ, luôn trả về object mới.
+- Không gọi API, không `Date.now()`, không `Math.random()` bên trong reducer. Những giá trị đó phải tính sẵn rồi truyền vào qua `action`.
+
+Đây chính là mô hình của **Redux**. Hiểu reducer rồi thì học Redux Toolkit sẽ rất nhanh.
+
+## Dữ liệu suy ra (derived)
+
+Tổng tiền, số lượng hay mức giảm giá đều **tính được** từ `items` và `coupon`. Đừng lưu chúng vào state, vì rất dễ lệch nhau. Hãy viết hàm `selectTotals(state)` để tính ra.
+
+## Bất biến trong mảng
+
+```js
+items.map((it) => (it.sku === sku ? { ...it, qty } : it))   // sửa một phần tử
+items.filter((it) => it.sku !== sku)                         // xoá
+```
+%%% quiz
+? Gọi `fetch` bên trong reducer có được không?
+- Được
+* Không, reducer phải là hàm thuần
+? Có nên lưu `total` vào state của giỏ hàng?
+- Có, để render nhanh hơn
+* Không, vì tính được từ items, lưu thêm dễ bị lệch
+%%% hints
+- add: nếu sku đã có thì tăng `qty`, chưa có thì thêm `{ ...item, qty: 1 }`.
+- setQty: `qty <= 0` thì xoá phần tử đó.
+- applyCoupon: mã nằm trong bảng `COUPONS` thì lưu lại, không có thì đặt `error: 'Mã không hợp lệ'`.
+- selectTotals: `subtotal = Σ price*qty`; `discount = Math.floor(subtotal * percent / 100)`; `total = subtotal - discount`.
+%%% starter
+const COUPONS = { SALE10: 10, VIP20: 20 };
+const initialCart = { items: [], coupon: null, error: null };
+
+/** actions: add {item:{sku,name,price}}, setQty {sku, qty}, remove {sku}, applyCoupon {code}, clear */
+function cartReducer(state, action) {
+  switch (action.type) {
+    case 'add':
+      state.items.push({ ...action.item, qty: 1 }); // TODO: đang sửa state cũ, chưa gộp sku trùng
+      return state;
+    default:
+      return state;
+  }
+}
+
+/** { count (tổng qty), subtotal, discount, total } */
+function selectTotals(state) {
+  return { count: 0, subtotal: 0, discount: 0, total: 0 }; // TODO
+}
+
+/** UI: mỗi item <li data-sku> có <button className="inc">+</button> <button className="dec">-</button>
+ *  <input name="coupon"> <button className="apply">Áp mã</button>, <p className="error">,
+ *  <p className="total">Tổng: {total}</p> */
+function Cart({ products }) {
+  const [state, dispatch] = useReducer(cartReducer, initialCart);
+  return <div>TODO</div>;
+}
+
+function App() {
+  return <Cart products={[{ sku: 'A', name: 'Áo', price: 100000 }, { sku: 'B', name: 'Quần', price: 250000 }]} />;
+}
+%%% tests
+const A = { sku: 'A', name: 'Áo', price: 100 };
+const B = { sku: 'B', name: 'Quần', price: 250 };
+const run = (...actions) => actions.reduce(cartReducer, initialCart);
+
+test('add gộp sku trùng', () => {
+  const s = run({ type: 'add', item: A }, { type: 'add', item: A }, { type: 'add', item: B });
+  expect(s.items).toEqual([{ ...A, qty: 2 }, { ...B, qty: 1 }]);
+});
+
+test('reducer không sửa state cũ', () => {
+  const s1 = run({ type: 'add', item: A });
+  const snapshot = JSON.stringify(s1);
+  const s2 = cartReducer(s1, { type: 'add', item: A });
+  expect(JSON.stringify(s1)).toBe(snapshot);
+  expect(s2 === s1).toBe(false);
+  expect(initialCart.items).toEqual([]);
+});
+
+test('setQty và remove', () => {
+  let s = run({ type: 'add', item: A }, { type: 'add', item: B }, { type: 'setQty', sku: 'A', qty: 5 });
+  expect(s.items[0].qty).toBe(5);
+  s = cartReducer(s, { type: 'setQty', sku: 'A', qty: 0 });
+  expect(s.items.map((i) => i.sku)).toEqual(['B']);
+  s = cartReducer(s, { type: 'remove', sku: 'B' });
+  expect(s.items).toEqual([]);
+});
+
+test('applyCoupon hợp lệ / không hợp lệ', () => {
+  let s = run({ type: 'applyCoupon', code: 'nope' });
+  expect(s.error).toBe('Mã không hợp lệ');
+  expect(s.coupon).toBeNull();
+  s = cartReducer(s, { type: 'applyCoupon', code: 'SALE10' });
+  expect(s.coupon).toBe('SALE10');
+  expect(s.error).toBeNull();
+});
+
+test('selectTotals', () => {
+  const s = run({ type: 'add', item: A }, { type: 'add', item: A }, { type: 'add', item: B }, { type: 'applyCoupon', code: 'VIP20' });
+  expect(selectTotals(s)).toEqual({ count: 3, subtotal: 450, discount: 90, total: 360 });
+});
+
+test('clear', () => {
+  const s = run({ type: 'add', item: A }, { type: 'applyCoupon', code: 'SALE10' }, { type: 'clear' });
+  expect(s).toEqual(initialCart);
+});
+
+test('UI Cart: thêm, tăng/giảm, áp mã', async () => {
+  const { container } = await render(<Cart products={[A, B]} />);
+  await click(getByText('Thêm Áo', container));
+  await click(getByText('Thêm Quần', container));
+  await click($('li[data-sku="A"] .inc', container));
+  expect($('.total', container).textContent).toBe('Tổng: 450');
+  await click($('li[data-sku="B"] .dec', container));
+  expect($('li[data-sku="B"]', container)).toBeNull();
+  await type($('input[name="coupon"]', container), 'SALE10');
+  await click($('.apply', container));
+  expect($('.total', container).textContent).toBe('Tổng: 180');
+  await type($('input[name="coupon"]', container), 'XXX');
+  await click($('.apply', container));
+  expect($('.error', container).textContent).toBe('Mã không hợp lệ');
+});
+%%% solution
+const COUPONS = { SALE10: 10, VIP20: 20 };
+const initialCart = { items: [], coupon: null, error: null };
+
+function cartReducer(state, action) {
+  switch (action.type) {
+    case 'add': {
+      const exists = state.items.some((i) => i.sku === action.item.sku);
+      const items = exists
+        ? state.items.map((i) => (i.sku === action.item.sku ? { ...i, qty: i.qty + 1 } : i))
+        : [...state.items, { ...action.item, qty: 1 }];
+      return { ...state, items };
+    }
+    case 'setQty':
+      return {
+        ...state,
+        items: action.qty <= 0
+          ? state.items.filter((i) => i.sku !== action.sku)
+          : state.items.map((i) => (i.sku === action.sku ? { ...i, qty: action.qty } : i)),
+      };
+    case 'remove':
+      return { ...state, items: state.items.filter((i) => i.sku !== action.sku) };
+    case 'applyCoupon':
+      return action.code in COUPONS
+        ? { ...state, coupon: action.code, error: null }
+        : { ...state, error: 'Mã không hợp lệ' };
+    case 'clear':
+      return initialCart;
+    default:
+      return state;
+  }
+}
+
+function selectTotals(state) {
+  const count = state.items.reduce((s, i) => s + i.qty, 0);
+  const subtotal = state.items.reduce((s, i) => s + i.price * i.qty, 0);
+  const discount = Math.floor((subtotal * (COUPONS[state.coupon] ?? 0)) / 100);
+  return { count, subtotal, discount, total: subtotal - discount };
+}
+
+function Cart({ products }) {
+  const [state, dispatch] = useReducer(cartReducer, initialCart);
+  const [code, setCode] = useState('');
+  const totals = selectTotals(state);
+  return (
+    <div>
+      <div>
+        {products.map((p) => (
+          <button key={p.sku} type="button" onClick={() => dispatch({ type: 'add', item: p })}>Thêm {p.name}</button>
+        ))}
+      </div>
+      <ul>
+        {state.items.map((i) => (
+          <li key={i.sku} data-sku={i.sku}>
+            {i.name} × {i.qty}
+            <button type="button" className="inc" onClick={() => dispatch({ type: 'setQty', sku: i.sku, qty: i.qty + 1 })}>+</button>
+            <button type="button" className="dec" onClick={() => dispatch({ type: 'setQty', sku: i.sku, qty: i.qty - 1 })}>-</button>
+          </li>
+        ))}
+      </ul>
+      <input name="coupon" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Mã giảm giá" />
+      <button type="button" className="apply" onClick={() => dispatch({ type: 'applyCoupon', code: code.trim() })}>Áp mã</button>
+      {state.error && <p className="error">{state.error}</p>}
+      <p className="total">Tổng: {totals.total}</p>
+    </div>
+  );
+}
+
+function App() {
+  return <Cart products={[{ sku: 'A', name: 'Áo', price: 100000 }, { sku: 'B', name: 'Quần', price: 250000 }]} />;
+}

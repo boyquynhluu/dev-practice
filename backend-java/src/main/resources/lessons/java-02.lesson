@@ -1,0 +1,170 @@
+%%% meta
+id: java-02
+title: OOP — đóng gói, bất biến, equals/hashCode
+level: core
+topic: OOP
+order: 2
+%%% theory
+## Đóng gói (encapsulation)
+
+Field để `private`. Mọi thay đổi trạng thái đi qua method, để object **tự kiểm tra tính hợp lệ** của chính nó. Như vậy không ai tạo được một `Money` có số tiền âm.
+
+## Value object bất biến
+
+Trong backend, các khái niệm như tiền, email hay khoảng thời gian nên làm thành **value object bất biến**:
+
+- field `private final`, không có setter;
+- validate ngay trong constructor hoặc factory method (`Money.of(...)`);
+- mỗi phép tính trả về **object mới**.
+
+Object bất biến thì an toàn khi dùng chung giữa nhiều thread, và an toàn khi làm key của `HashMap`.
+
+## equals và hashCode: hợp đồng bắt buộc
+
+- Nếu `a.equals(b)` thì **bắt buộc** `a.hashCode() == b.hashCode()`.
+- Nếu override `equals` mà không override `hashCode`, `HashSet`/`HashMap` sẽ chạy sai: hai object "bằng nhau" vẫn bị lưu thành hai phần tử.
+
+```java
+@Override public boolean equals(Object o) {
+    if (this == o) return true;
+    if (!(o instanceof Money m)) return false;
+    return amount.equals(m.amount) && currency.equals(m.currency);
+}
+@Override public int hashCode() { return Objects.hash(amount, currency); }
+```
+
+## Bẫy của BigDecimal
+
+`new BigDecimal("10.5").equals(new BigDecimal("10.50"))` là **false**, vì `equals` so sánh cả scale. Có hai cách xử lý: chuẩn hoá bằng `setScale(2, RoundingMode.HALF_UP)` ngay khi tạo, hoặc so sánh bằng `compareTo`.
+
+> Java 16+ có `record` để viết value object rất gọn. Bài này viết bằng class thường để bạn hiểu thứ mà record tự sinh ra.
+%%% quiz
+? Override `equals` nhưng quên `hashCode` thì điều gì xảy ra?
+- Lỗi biên dịch
+* HashSet có thể chứa 2 phần tử "bằng nhau"
+- Không ảnh hưởng gì
+> HashSet tìm bucket bằng hashCode trước, sau đó mới gọi equals.
+? Vì sao value object nên bất biến?
+- Để chạy nhanh hơn
+* An toàn khi dùng làm key của Map và chia sẻ giữa các thread
+- Vì Java bắt buộc
+> Nếu object thay đổi sau khi đã làm key, Map sẽ không tìm thấy nó nữa.
+%%% hints
+- Chuẩn hoá `amount.setScale(2, RoundingMode.HALF_UP)` trong constructor, để 10.5 và 10.50 trở thành cùng một giá trị.
+- `plus`: kiểm tra `currency.equals(other.currency)`, nếu khác thì ném `IllegalArgumentException`.
+- `toString()`: `amount.toPlainString() + " " + currency`.
+%%% starter
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.Objects;
+
+final class Money {
+    private final BigDecimal amount;
+    private final String currency;
+
+    private Money(BigDecimal amount, String currency) {
+        // TODO: validate (không âm, currency 3 chữ in hoa) + chuẩn hoá scale = 2
+        this.amount = amount;
+        this.currency = currency;
+    }
+
+    static Money of(String amount, String currency) {
+        return new Money(new BigDecimal(amount), currency);
+    }
+
+    Money plus(Money other) {
+        // TODO
+        return this;
+    }
+
+    Money times(int factor) {
+        // TODO
+        return this;
+    }
+
+    BigDecimal amount() { return amount; }
+
+    String currency() { return currency; }
+
+    // TODO: equals, hashCode, toString
+}
+%%% tests
+import java.math.BigDecimal;
+import java.util.HashSet;
+import java.util.Set;
+
+class Tests {
+    static void run(T t) {
+        t.test("toString có 2 chữ số thập phân", () -> T.eq("10.50 USD", Money.of("10.5", "USD").toString()));
+        t.test("plus trả object mới, không sửa object cũ", () -> {
+            Money a = Money.of("10", "USD");
+            Money b = a.plus(Money.of("2.25", "USD"));
+            T.eq("12.25 USD", b.toString());
+            T.eq("10.00 USD", a.toString());
+        });
+        t.test("times", () -> T.eq("31.50 USD", Money.of("10.5", "USD").times(3).toString()));
+        t.test("cộng khác loại tiền -> IllegalArgumentException", () ->
+                T.throwsEx(IllegalArgumentException.class, () -> Money.of("1", "USD").plus(Money.of("1", "EUR"))));
+        t.test("số tiền âm -> IllegalArgumentException", () ->
+                T.throwsEx(IllegalArgumentException.class, () -> Money.of("-1", "USD")));
+        t.test("currency phải là 3 chữ in hoa", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> Money.of("1", "usd"));
+            T.throwsEx(IllegalArgumentException.class, () -> Money.of("1", null));
+        });
+        t.test("equals: 10.5 USD == 10.50 USD", () -> T.eq(Money.of("10.5", "USD"), Money.of("10.50", "USD")));
+        t.test("equals: khác currency thì khác", () -> T.ok(!Money.of("1", "USD").equals(Money.of("1", "EUR")), "USD không được bằng EUR"));
+        t.test("hashCode nhất quán với equals (HashSet)", () -> {
+            Set<Money> set = new HashSet<>();
+            set.add(Money.of("5", "USD"));
+            set.add(Money.of("5.00", "USD"));
+            T.eq(1, set.size());
+        });
+        t.test("amount() đã chuẩn hoá scale 2", () -> T.eq(new BigDecimal("3.00"), Money.of("3", "USD").amount()));
+    }
+}
+%%% solution
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.Objects;
+
+final class Money {
+    private final BigDecimal amount;
+    private final String currency;
+
+    private Money(BigDecimal amount, String currency) {
+        if (amount == null || amount.signum() < 0) throw new IllegalArgumentException("Số tiền không được âm");
+        if (currency == null || !currency.matches("[A-Z]{3}")) throw new IllegalArgumentException("Currency không hợp lệ: " + currency);
+        this.amount = amount.setScale(2, RoundingMode.HALF_UP);
+        this.currency = currency;
+    }
+
+    static Money of(String amount, String currency) {
+        return new Money(new BigDecimal(amount), currency);
+    }
+
+    Money plus(Money other) {
+        if (!currency.equals(other.currency)) throw new IllegalArgumentException("Khác loại tiền: " + currency + " và " + other.currency);
+        return new Money(amount.add(other.amount), currency);
+    }
+
+    Money times(int factor) {
+        return new Money(amount.multiply(BigDecimal.valueOf(factor)), currency);
+    }
+
+    BigDecimal amount() { return amount; }
+
+    String currency() { return currency; }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Money m)) return false;
+        return amount.equals(m.amount) && currency.equals(m.currency);
+    }
+
+    @Override
+    public int hashCode() { return Objects.hash(amount, currency); }
+
+    @Override
+    public String toString() { return amount.toPlainString() + " " + currency; }
+}

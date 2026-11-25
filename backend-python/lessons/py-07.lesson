@@ -1,0 +1,249 @@
+%%% meta
+id: py-07
+title: Decorator — retry, cache, phân quyền
+level: intermediate
+topic: Hàm nâng cao
+order: 7
+%%% theory
+## Decorator là hàm nhận hàm và trả về hàm
+
+```python
+import functools
+
+def log_calls(fn):
+    @functools.wraps(fn)                 # giữ __name__, __doc__ của hàm gốc
+    def wrapper(*args, **kwargs):
+        print("gọi", fn.__name__, args)
+        return fn(*args, **kwargs)
+    return wrapper
+
+@log_calls          # tương đương: add = log_calls(add)
+def add(a, b): return a + b
+```
+
+## Decorator có tham số: thêm một tầng
+
+```python
+def retry(times=3, exceptions=(Exception,)):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            ...
+        return wrapper
+    return decorator
+
+@retry(times=5, exceptions=(ConnectionError,))
+def call_api(): ...
+```
+
+## Decorator xuất hiện khắp nơi trong backend Python
+
+- Flask/FastAPI: `@app.get("/users")` đăng ký route.
+- `@functools.lru_cache(maxsize=128)` cache kết quả của hàm thuần.
+- `@login_required`, `@require_role("admin")` kiểm tra quyền trước khi chạy handler.
+- `@transaction.atomic` (Django) bọc hàm trong một transaction.
+
+## Gắn thuộc tính lên wrapper
+
+Hàm cũng là object, nên gắn thêm thuộc tính lên nó được: `wrapper.calls = 0`. Cách này hay dùng để làm thống kê, hoặc để có hàm `cache_clear()`.
+
+> Chỉ retry những lỗi **tạm thời** (mạng, timeout). Nếu dữ liệu sai thì có retry bao nhiêu lần cũng vẫn sai.
+%%% quiz
+? Không dùng `functools.wraps` thì sao?
+* Hàm bị decorate mất `__name__` và docstring gốc (đều thành của wrapper)
+- Decorator không chạy
+- Lỗi cú pháp
+? `@retry(times=3)` cần mấy tầng hàm lồng nhau?
+- 1
+- 2
+* 3
+%%% hints
+- retry: vòng `for attempt in range(times)`, `except exceptions as e: last = e`, hết vòng thì `raise last`. Lỗi không nằm trong `exceptions` sẽ tự bay ra ngoài, không cần làm gì.
+- memoize: `cache = {}`, key là `(args, tuple(sorted(kwargs.items())))`; gắn `wrapper.cache_clear = cache.clear`.
+- require_role: tham số đầu tiên của handler là `user` (dict có key "roles").
+%%% starter
+import functools
+import time
+
+
+def retry(times: int = 3, exceptions: tuple = (Exception,)):
+    """Thử lại tối đa `times` lần với các lỗi thuộc `exceptions`; hết lượt thì ném lỗi cuối."""
+    def decorator(fn):
+        return fn  # TODO
+    return decorator
+
+
+def memoize(fn):
+    """Cache theo (args, kwargs). wrapper.hits đếm số lần trúng cache; wrapper.cache_clear() xoá cache."""
+    return fn  # TODO
+
+
+def require_role(role: str):
+    """Handler có dạng handler(user, ...). user['roles'] không chứa role -> PermissionError."""
+    def decorator(fn):
+        return fn  # TODO
+    return decorator
+
+
+def timed(fn):
+    """Ghi thời gian chạy lần gần nhất (ms, float) vào wrapper.last_ms."""
+    return fn  # TODO
+%%% tests
+import time
+
+from checker import test, eq, ok, raises
+from solution import *
+
+
+@test("retry thành công sau vài lần")
+def _():
+    calls = []
+
+    @retry(times=3, exceptions=(ConnectionError,))
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("mạng")
+        return "ok"
+
+    eq("ok", flaky())
+    eq(3, len(calls))
+
+
+@test("retry hết lượt ném lỗi cuối")
+def _():
+    calls = []
+
+    @retry(times=2, exceptions=(ConnectionError,))
+    def down():
+        calls.append(1)
+        raise ConnectionError(f"lần {len(calls)}")
+
+    e = raises(ConnectionError, down)
+    eq("lần 2", str(e))
+
+
+@test("retry không thử lại lỗi không nằm trong danh sách")
+def _():
+    calls = []
+
+    @retry(times=5, exceptions=(ConnectionError,))
+    def bad():
+        calls.append(1)
+        raise ValueError("dữ liệu sai")
+
+    raises(ValueError, bad)
+    eq(1, len(calls))
+
+
+@test("functools.wraps giữ tên hàm")
+def _():
+    @retry()
+    def get_user():
+        """lấy user"""
+
+    @memoize
+    def compute():
+        pass
+
+    eq("get_user", get_user.__name__)
+    eq("lấy user", get_user.__doc__)
+    eq("compute", compute.__name__)
+
+
+@test("memoize cache + hits + cache_clear")
+def _():
+    runs = []
+
+    @memoize
+    def square(x, *, offset=0):
+        runs.append(x)
+        return x * x + offset
+
+    eq(9, square(3))
+    eq(9, square(3))
+    eq(10, square(3, offset=1))
+    eq([3, 3], runs)
+    eq(1, square.hits)
+    square.cache_clear()
+    square(3)
+    eq(3, len(runs))
+
+
+@test("require_role")
+def _():
+    @require_role("admin")
+    def delete_user(user, user_id):
+        return f"đã xoá {user_id}"
+
+    eq("đã xoá 7", delete_user({"roles": ["admin", "staff"]}, 7))
+    raises(PermissionError, delete_user, {"roles": ["staff"]}, 7)
+
+
+@test("timed ghi last_ms")
+def _():
+    @timed
+    def slow():
+        time.sleep(0.05)
+        return 1
+
+    eq(1, slow())
+    ok(40 <= slow.last_ms < 1000, f"last_ms = {getattr(slow, 'last_ms', None)}")
+%%% solution
+import functools
+import time
+
+
+def retry(times: int = 3, exceptions: tuple = (Exception,)):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            last = None
+            for _ in range(times):
+                try:
+                    return fn(*args, **kwargs)
+                except exceptions as e:
+                    last = e
+            raise last
+        return wrapper
+    return decorator
+
+
+def memoize(fn):
+    cache = {}
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        key = (args, tuple(sorted(kwargs.items())))
+        if key in cache:
+            wrapper.hits += 1
+            return cache[key]
+        result = cache[key] = fn(*args, **kwargs)
+        return result
+
+    wrapper.hits = 0
+    wrapper.cache_clear = cache.clear
+    return wrapper
+
+
+def require_role(role: str):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(user, *args, **kwargs):
+            if role not in user.get("roles", []):
+                raise PermissionError(f"cần quyền {role}")
+            return fn(user, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def timed(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            wrapper.last_ms = (time.perf_counter() - start) * 1000
+    wrapper.last_ms = 0.0
+    return wrapper

@@ -1,0 +1,239 @@
+%%% meta
+id: fe-15
+title: Tự viết state manager — store, subscribe, useSyncExternalStore
+level: advanced
+topic: Kiến trúc FE
+order: 15
+%%% theory
+## Store bên ngoài React
+
+Redux, Zustand hay Jotai đều dựa trên cùng một ý tưởng, rất nhỏ:
+
+```js
+function createStore(reducer, initial) {
+  let state = initial;
+  const listeners = new Set();
+  return {
+    getState: () => state,
+    dispatch(action) {
+      const next = reducer(state, action);
+      if (next !== state) {            // không đổi thì không báo ai
+        state = next;
+        listeners.forEach((l) => l());
+      }
+    },
+    subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
+  };
+}
+```
+
+## Nối store vào React: `useSyncExternalStore`
+
+```jsx
+function useStore(store, selector) {
+  return useSyncExternalStore(store.subscribe, () => selector(store.getState()));
+}
+```
+
+- React gọi `subscribe` khi mount và gọi hàm hủy khi unmount.
+- Sau mỗi lần store báo thay đổi, React chạy lại `getSnapshot` (tức là `selector`) rồi so sánh bằng `Object.is`. **Giá trị không đổi thì component không render lại.** Nhờ đó, component chỉ dùng `state.count` sẽ không render lại khi `state.user` đổi.
+- ⚠ `selector` **phải trả về cùng tham chiếu** nếu dữ liệu không đổi. Viết `(s) => ({ a: s.a })` sẽ tạo object mới mỗi lần, gây render vô hạn hoặc cảnh báo. Hãy chọn từng giá trị nguyên thủy, hoặc tự memo kết quả.
+
+## Middleware
+
+`dispatch` có thể được bọc lại để log, gửi analytics hay xử lý async. Đó chính là ý tưởng của Redux middleware:
+
+```js
+const withLogger = (store, log) => ({ ...store, dispatch: (a) => { log(a.type); store.dispatch(a); } });
+```
+
+## Chọn công cụ nào?
+
+| Dữ liệu | Nên đặt ở đâu |
+|---|---|
+| Từ server (danh sách, chi tiết) | TanStack Query / SWR |
+| Toàn cục, phía client (giỏ hàng, UI) | Zustand / Redux Toolkit / store tự viết |
+| Chỉ một component dùng | useState / useReducer |
+%%% quiz
+? Một component dùng `useStore(store, s => s.count)`. Khi `state.user` đổi thì sao?
+* Không render lại, vì count không đổi
+- Render lại
+? Selector `s => ({ count: s.count })` có vấn đề gì?
+* Mỗi lần gọi trả về một object mới, React tưởng là có thay đổi
+- Không có vấn đề gì
+%%% hints
+- createStore: lưu `state` và `listeners` (một `Set`); `dispatch` chỉ gọi listener khi `next !== state`; `subscribe` trả về hàm huỷ.
+- useStore: `useSyncExternalStore(store.subscribe, () => selector(store.getState()))`.
+- withLogger: trả về object mới, gồm mọi method của store cùng một `dispatch` đã bọc lại.
+%%% starter
+function createStore(reducer, initialState) {
+  let state = initialState;
+  return {
+    getState: () => state,
+    dispatch(action) {
+      state = reducer(state, action); // TODO: báo cho listener
+    },
+    subscribe(listener) {
+      return () => {}; // TODO
+    },
+  };
+}
+
+function useStore(store, selector) {
+  return selector(store.getState()); // TODO: không tự render lại khi store đổi
+}
+
+function withLogger(store, log) {
+  return store; // TODO: log(action.type) trước khi dispatch
+}
+
+// ---- demo ----
+function counterReducer(state, action) {
+  switch (action.type) {
+    case 'inc': return { ...state, count: state.count + 1 };
+    case 'rename': return { ...state, user: action.name };
+    case 'noop': return state;
+    default: return state;
+  }
+}
+
+function App() {
+  const store = useMemo(() => createStore(counterReducer, { count: 0, user: 'An' }), []);
+  const count = useStore(store, (s) => s.count);
+  return <button onClick={() => store.dispatch({ type: 'inc' })}>count = {count}</button>;
+}
+%%% tests
+const makeStore = () => createStore(counterReducer, { count: 0, user: 'An' });
+
+test('getState / dispatch', () => {
+  const s = makeStore();
+  s.dispatch({ type: 'inc' });
+  s.dispatch({ type: 'inc' });
+  expect(s.getState()).toEqual({ count: 2, user: 'An' });
+});
+
+test('subscribe nhận thông báo, unsubscribe thì thôi', () => {
+  const s = makeStore();
+  const l = fn();
+  const off = s.subscribe(l);
+  s.dispatch({ type: 'inc' });
+  off();
+  s.dispatch({ type: 'inc' });
+  expect(l.calls.length).toBe(1);
+});
+
+test('state không đổi (cùng tham chiếu) thì không báo listener', () => {
+  const s = makeStore();
+  const l = fn();
+  s.subscribe(l);
+  s.dispatch({ type: 'noop' });
+  expect(l.calls.length).toBe(0);
+});
+
+test('useStore render lại khi phần được chọn đổi', async () => {
+  const s = makeStore();
+  function Count() {
+    return <p className="c">{useStore(s, (st) => st.count)}</p>;
+  }
+  const { container } = await render(<Count />);
+  expect($('.c', container).textContent).toBe('0');
+  s.dispatch({ type: 'inc' });
+  await flush();
+  expect($('.c', container).textContent).toBe('1');
+});
+
+test('selector: component chỉ render lại khi phần NÓ chọn đổi', async () => {
+  const s = makeStore();
+  const renders = { count: 0, user: 0 };
+  function Count() {
+    renders.count++;
+    return <p>{useStore(s, (st) => st.count)}</p>;
+  }
+  function User() {
+    renders.user++;
+    return <p>{useStore(s, (st) => st.user)}</p>;
+  }
+  await render(<><Count /><User /></>);
+  renders.count = 0;
+  renders.user = 0;
+  s.dispatch({ type: 'rename', name: 'Bình' });
+  await flush();
+  expect(renders).toEqual({ count: 0, user: 1 });
+});
+
+test('unmount thì huỷ đăng ký', async () => {
+  const s = makeStore();
+  const realSubscribe = s.subscribe;
+  let active = 0;
+  s.subscribe = (l) => {
+    active++;
+    const off = realSubscribe(l);
+    return () => {
+      active--;
+      off();
+    };
+  };
+  function Count() {
+    return <p>{useStore(s, (st) => st.count)}</p>;
+  }
+  const { unmount } = await render(<Count />);
+  expect(active).toBe(1);
+  await unmount();
+  expect(active).toBe(0);
+});
+
+test('withLogger', () => {
+  const logs = [];
+  const s = withLogger(makeStore(), (t) => logs.push(t));
+  s.dispatch({ type: 'inc' });
+  s.dispatch({ type: 'rename', name: 'X' });
+  expect(logs).toEqual(['inc', 'rename']);
+  expect(s.getState()).toEqual({ count: 1, user: 'X' });
+});
+%%% solution
+function createStore(reducer, initialState) {
+  let state = initialState;
+  const listeners = new Set();
+  return {
+    getState: () => state,
+    dispatch(action) {
+      const next = reducer(state, action);
+      if (next === state) return;
+      state = next;
+      listeners.forEach((l) => l());
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+function useStore(store, selector) {
+  return useSyncExternalStore(store.subscribe, () => selector(store.getState()));
+}
+
+function withLogger(store, log) {
+  return {
+    ...store,
+    dispatch(action) {
+      log(action.type);
+      store.dispatch(action);
+    },
+  };
+}
+
+function counterReducer(state, action) {
+  switch (action.type) {
+    case 'inc': return { ...state, count: state.count + 1 };
+    case 'rename': return { ...state, user: action.name };
+    case 'noop': return state;
+    default: return state;
+  }
+}
+
+function App() {
+  const store = useMemo(() => createStore(counterReducer, { count: 0, user: 'An' }), []);
+  const count = useStore(store, (s) => s.count);
+  return <button onClick={() => store.dispatch({ type: 'inc' })}>count = {count}</button>;
+}

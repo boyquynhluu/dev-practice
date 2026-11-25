@@ -1,0 +1,328 @@
+%%% meta
+id: java-37
+title: Concurrency — synchronized, ReentrantLock và chuyển tiền không deadlock
+level: advanced
+topic: Concurrency
+order: 37
+%%% theory
+## synchronized
+
+```java
+synchronized void deposit(long x) { balance += x; }   // khoá trên `this`
+```
+
+- Đơn giản, JVM tự nhả khoá khi ra khỏi khối, kể cả khi ném exception.
+- **Reentrant**: thread đang giữ khoá có thể vào lại một method `synchronized` khác của cùng object.
+- Hạn chế: không có timeout, không ngắt được lúc đang chờ, không có fairness. Trong Java 21, khối này còn **ghim virtual thread** nếu có I/O bên trong.
+
+## ReentrantLock
+
+```java
+private final ReentrantLock lock = new ReentrantLock();
+
+lock.lock();
+try {
+    balance += x;
+} finally {
+    lock.unlock();          // BẮT BUỘC trong finally
+}
+```
+
+Những gì `synchronized` không có:
+- `tryLock(timeout, unit)`: chờ có giới hạn, quá hạn thì bỏ cuộc thay vì treo mãi.
+- `lockInterruptibly()`: đang chờ khoá vẫn có thể bị ngắt.
+- `new ReentrantLock(true)`: fair lock, thread chờ lâu nhất được vào trước.
+- `Condition`: nhiều hàng chờ trên cùng một khoá, ví dụ `notFull` và `notEmpty`.
+
+## Deadlock khi chuyển tiền
+
+```
+Thread 1: transfer(A → B): lock(A) … chờ lock(B)
+Thread 2: transfer(B → A): lock(B) … chờ lock(A)      ← cả hai chờ nhau mãi mãi
+```
+
+Deadlock xảy ra khi có đủ 4 điều kiện: loại trừ lẫn nhau, giữ khoá và chờ khoá khác, không bị cướp khoá, và **chờ vòng**. Cách phá dễ nhất là phá **chờ vòng**: **luôn khoá theo một thứ tự toàn cục**, ví dụ theo id tăng dần, bất kể chiều chuyển tiền là gì.
+
+```java
+Account first  = from.id() < to.id() ? from : to;
+Account second = from.id() < to.id() ? to : from;
+first.lock().lock();
+try {
+    second.lock().lock();
+    try { /* chuyển tiền */ } finally { second.lock().unlock(); }
+} finally { first.lock().unlock(); }
+```
+
+Cách thứ hai là dùng `tryLock` có timeout. Không lấy được đủ khoá thì **nhả hết**, báo thất bại hoặc thử lại sau. Cách này phá điều kiện "giữ khoá và chờ khoá khác".
+
+Ở tầng database cũng y như vậy. `SELECT … FOR UPDATE` trên nhiều dòng nên đi theo thứ tự id, và MySQL sẽ tự phát hiện deadlock rồi rollback một transaction.
+
+## Bài tập
+
+Viết `Bank.transfer` an toàn khi chạy đồng thời, không deadlock (khoá theo thứ tự id), và `tryTransfer` có timeout bằng `tryLock`.
+%%% quiz
+? Vì sao `unlock()` phải nằm trong `finally`?
+* Để khoá luôn được nhả ra, kể cả khi đoạn giữa ném exception
+- Vì Java bắt buộc về cú pháp
+- Để chạy nhanh hơn
+? Thread 1 chuyển A→B, thread 2 chuyển B→A, mỗi bên khoá tài khoản nguồn trước. Điều gì có thể xảy ra?
+- Race condition làm sai số dư
+* Deadlock, hai thread chờ nhau mãi mãi
+- Không có vấn đề gì
+? Cách đơn giản nhất để tránh deadlock khi phải khoá nhiều tài nguyên là gì?
+- Dùng `synchronized` thay cho `ReentrantLock`
+* Luôn khoá theo một thứ tự toàn cục cố định, ví dụ theo id tăng dần
+- Tăng số thread
+? `ReentrantLock` có tính năng nào mà `synchronized` không có?
+- Reentrant
+* `tryLock` có timeout và `lockInterruptibly`
+- Tự nhả khoá khi có exception
+%%% hints
+- `transfer`: kiểm tra `from == to` thì ném `IllegalArgumentException`, `amount <= 0` cũng ném `IllegalArgumentException`. Sau đó chọn `first` và `second` theo id nhỏ hơn và lớn hơn, rồi khoá lồng nhau, mỗi khoá có `try/finally` riêng.
+- Kiểm tra số dư **sau khi** đã giữ cả hai khoá. Không đủ tiền thì ném `IllegalStateException`. Các khối `finally` sẽ tự nhả khoá.
+- `tryTransfer`: dùng `first.lock().tryLock(timeoutMs, MILLISECONDS)`, thất bại thì trả `false`. Lấy được rồi thì `try { second.lock().tryLock(...) … } finally { first.lock().unlock(); }`.
+- `tryLock` ném `InterruptedException`: gọi `Thread.currentThread().interrupt()` rồi trả `false`.
+%%% starter
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+
+class Account {
+    private final int id;
+    private long balance;
+    private final ReentrantLock lock = new ReentrantLock();
+
+    Account(int id, long balance) {
+        this.id = id;
+        this.balance = balance;
+    }
+
+    int id() { return id; }
+
+    ReentrantLock lock() { return lock; }
+
+    /** Chỉ gọi khi đang giữ lock(). */
+    long balance() { return balance; }
+
+    /** Chỉ gọi khi đang giữ lock(). */
+    void add(long delta) { balance += delta; }
+}
+
+class Bank {
+    private final Map<Integer, Account> accounts = new HashMap<>();
+
+    Bank(long... balances) {
+        for (int i = 0; i < balances.length; i++) accounts.put(i, new Account(i, balances[i]));
+    }
+
+    Account account(int id) { return accounts.get(id); }
+
+    /** Tổng tiền mọi tài khoản (chỉ gọi khi không còn giao dịch đang chạy). */
+    long total() {
+        return accounts.values().stream().mapToLong(Account::balance).sum();
+    }
+
+    /**
+     * Thread-safe, không deadlock. from == to hoặc amount <= 0 → IllegalArgumentException;
+     * không đủ tiền → IllegalStateException (không đổi số dư).
+     */
+    void transfer(int fromId, int toId, long amount) {
+        // TODO: chưa có khoá
+        Account from = account(fromId), to = account(toId);
+        if (from.balance() < amount) throw new IllegalStateException("Không đủ tiền");
+        from.add(-amount);
+        to.add(amount);
+    }
+
+    /** Như transfer nhưng chờ mỗi khoá tối đa timeoutMs; không lấy được khoá → trả false, không đổi gì. */
+    boolean tryTransfer(int fromId, int toId, long amount, long timeoutMs) {
+        transfer(fromId, toId, amount); // TODO
+        return true;
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+class Tests {
+    static void parallel(int threads, java.util.function.IntConsumer body) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> fs = new ArrayList<>();
+        for (int i = 0; i < threads; i++) {
+            int n = i;
+            fs.add(pool.submit(() -> {
+                start.await();
+                body.accept(n);
+                return null;
+            }));
+        }
+        start.countDown();
+        for (Future<?> f : fs) f.get();
+        pool.shutdown();
+    }
+
+    static void run(T t) {
+        t.test("chuyển tiền cơ bản", () -> {
+            Bank b = new Bank(100, 50);
+            b.transfer(0, 1, 30);
+            T.eq(70L, b.account(0).balance());
+            T.eq(80L, b.account(1).balance());
+        });
+        t.test("không đủ tiền → IllegalStateException, số dư giữ nguyên", () -> {
+            Bank b = new Bank(10, 0);
+            T.throwsEx(IllegalStateException.class, () -> b.transfer(0, 1, 11));
+            T.eq(10L, b.account(0).balance());
+            T.ok(!b.account(0).lock().isLocked(), "phải nhả khoá sau exception");
+        });
+        t.test("validate: cùng tài khoản hoặc amount <= 0", () -> {
+            Bank b = new Bank(10, 10);
+            T.throwsEx(IllegalArgumentException.class, () -> b.transfer(0, 0, 1));
+            T.throwsEx(IllegalArgumentException.class, () -> b.transfer(0, 1, 0));
+        });
+        t.test("8 thread chuyển qua lại hai chiều: không mất tiền, không deadlock", () -> {
+            Bank b = new Bank(10_000, 10_000, 10_000, 10_000);
+            parallel(8, n -> {
+                Random r = new Random(n);
+                for (int i = 0; i < 5_000; i++) {
+                    int from = r.nextInt(4), to = (from + 1 + r.nextInt(3)) % 4;
+                    try {
+                        b.transfer(from, to, 1 + r.nextInt(5));
+                    } catch (IllegalStateException ignored) {
+                        // không đủ tiền: bỏ qua
+                    }
+                }
+            });
+            T.eq("tổng tiền phải được bảo toàn", 40_000L, b.total());
+        });
+        t.test("tryTransfer: khoá đang bị giữ → trả false trong thời gian chờ", () -> {
+            Bank b = new Bank(100, 100);
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            Thread holder = new Thread(() -> {
+                b.account(1).lock().lock();
+                try {
+                    held.countDown();
+                    release.await();
+                } catch (InterruptedException ignored) {
+                    // kết thúc
+                } finally {
+                    b.account(1).lock().unlock();
+                }
+            });
+            holder.start();
+            held.await();
+            long start = System.nanoTime();
+            boolean ok = b.tryTransfer(0, 1, 10, 100);
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            release.countDown();
+            holder.join();
+            T.ok(!ok, "phải trả false khi không lấy được khoá");
+            T.ok(ms < 1_000, "phải bỏ cuộc sau khoảng timeout, mất " + ms + "ms");
+            T.eq(100L, b.account(0).balance());
+            T.ok(!b.account(0).lock().isLocked(), "phải nhả khoá đã lấy được");
+        });
+        t.test("tryTransfer: lấy được khoá → chuyển và trả true", () -> {
+            Bank b = new Bank(100, 0);
+            T.ok(b.tryTransfer(0, 1, 40, 100), "phải trả true");
+            T.eq(40L, b.account(1).balance());
+        });
+    }
+}
+%%% solution
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+
+class Account {
+    private final int id;
+    private long balance;
+    private final ReentrantLock lock = new ReentrantLock();
+
+    Account(int id, long balance) {
+        this.id = id;
+        this.balance = balance;
+    }
+
+    int id() { return id; }
+
+    ReentrantLock lock() { return lock; }
+
+    long balance() { return balance; }
+
+    void add(long delta) { balance += delta; }
+}
+
+class Bank {
+    private final Map<Integer, Account> accounts = new HashMap<>();
+
+    Bank(long... balances) {
+        for (int i = 0; i < balances.length; i++) accounts.put(i, new Account(i, balances[i]));
+    }
+
+    Account account(int id) { return accounts.get(id); }
+
+    long total() {
+        return accounts.values().stream().mapToLong(Account::balance).sum();
+    }
+
+    void transfer(int fromId, int toId, long amount) {
+        Account from = account(fromId), to = account(toId);
+        validate(from, to, amount);
+        Account first = from.id() < to.id() ? from : to;
+        Account second = first == from ? to : from;
+        first.lock().lock();
+        try {
+            second.lock().lock();
+            try {
+                move(from, to, amount);
+            } finally {
+                second.lock().unlock();
+            }
+        } finally {
+            first.lock().unlock();
+        }
+    }
+
+    boolean tryTransfer(int fromId, int toId, long amount, long timeoutMs) {
+        Account from = account(fromId), to = account(toId);
+        validate(from, to, amount);
+        Account first = from.id() < to.id() ? from : to;
+        Account second = first == from ? to : from;
+        try {
+            if (!first.lock().tryLock(timeoutMs, TimeUnit.MILLISECONDS)) return false;
+            try {
+                if (!second.lock().tryLock(timeoutMs, TimeUnit.MILLISECONDS)) return false;
+                try {
+                    move(from, to, amount);
+                    return true;
+                } finally {
+                    second.lock().unlock();
+                }
+            } finally {
+                first.lock().unlock();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static void validate(Account from, Account to, long amount) {
+        if (from == to) throw new IllegalArgumentException("Không chuyển cho chính mình");
+        if (amount <= 0) throw new IllegalArgumentException("amount phải > 0");
+    }
+
+    private static void move(Account from, Account to, long amount) {
+        if (from.balance() < amount) throw new IllegalStateException("Không đủ tiền");
+        from.add(-amount);
+        to.add(amount);
+    }
+}

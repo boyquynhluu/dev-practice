@@ -1,0 +1,290 @@
+%%% meta
+id: java-21
+title: Transaction — ACID, isolation level và optimistic locking
+level: advanced
+topic: Transaction
+order: 21
+%%% theory
+## ACID
+
+| | Ý nghĩa | Ví dụ khi thiếu |
+|---|---|---|
+| **Atomicity** | Hoặc tất cả cùng thành công, hoặc không có gì xảy ra | Trừ tiền A rồi, mà chưa cộng cho B thì lỗi |
+| **Consistency** | Ràng buộc (FK, CHECK, UNIQUE) luôn đúng sau transaction | Số dư bị âm |
+| **Isolation** | Các transaction chạy song song không thấy trạng thái dở dang của nhau | Đọc được dữ liệu chưa commit |
+| **Durability** | Đã commit thì không mất, kể cả khi mất điện | Ghi vào cache rồi báo thành công |
+
+## Các lỗi khi chạy đồng thời và isolation level
+
+- **Dirty read:** đọc được dữ liệu transaction khác **chưa commit**.
+- **Non-repeatable read:** đọc lại cùng một dòng mà ra giá trị khác.
+- **Phantom read:** chạy lại cùng một query mà có thêm hoặc bớt dòng.
+- **Lost update:** hai transaction cùng đọc `balance = 100`, cùng tính rồi ghi. Lần ghi sau đè lên lần ghi trước.
+
+| Level | Dirty | Non-repeatable | Phantom |
+|---|---|---|---|
+| READ UNCOMMITTED | có thể | có thể | có thể |
+| READ COMMITTED (mặc định của PostgreSQL) | ✔ chặn | có thể | có thể |
+| REPEATABLE READ (**mặc định của MySQL InnoDB**) | ✔ | ✔ | InnoDB chặn phần lớn nhờ next-key lock |
+| SERIALIZABLE | ✔ | ✔ | ✔, nhưng chậm và dễ deadlock |
+
+**Lost update vẫn xảy ra ở REPEATABLE READ** nếu code viết theo kiểu "đọc → tính trong Java → ghi". Có hai cách chống:
+
+### Pessimistic locking
+
+```sql
+SELECT balance FROM account WHERE id = 1 FOR UPDATE;   -- giữ khoá dòng tới khi commit
+```
+
+Cách này đơn giản và chắc chắn. Nhưng các transaction khác phải **chờ**, nên dễ nghẽn và dễ deadlock nếu khoá nhiều dòng không theo cùng thứ tự.
+
+### Optimistic locking (cột version)
+
+```sql
+UPDATE account SET balance = ?, version = version + 1
+WHERE id = ? AND version = ?;      -- version lúc đọc
+-- số dòng bị ảnh hưởng = 0 nghĩa là đã có người sửa trước → xung đột
+```
+
+Cách này không giữ khoá. Khi xung đột thì **đọc lại và thử lại** (retry), có giới hạn số lần, và thường có backoff. JPA làm việc này tự động với `@Version`: khi xung đột nó ném `OptimisticLockException`.
+
+Nên dùng optimistic locking khi **xung đột hiếm**, ví dụ sửa hồ sơ hay sửa giỏ hàng. Dùng pessimistic locking khi tranh chấp cao trên **cùng một dòng**, ví dụ bán vé hot hay trừ kho flash sale. Một cách khác là dùng câu lệnh atomic: `UPDATE ... SET stock = stock - 1 WHERE id = ? AND stock > 0`.
+
+## @Transactional: các lỗi hay gặp
+
+- Gọi một method `@Transactional` **từ chính class đó** (`this.method()`) thì proxy bị bỏ qua, nên **không có transaction**.
+- Mặc định chỉ rollback khi gặp `RuntimeException` hoặc `Error`. Checked exception thì **không** rollback, trừ khi khai báo `rollbackFor`.
+- Retry phải nằm **ngoài** transaction. Mỗi lần thử là một transaction mới, vì đọc lại trong cùng một transaction REPEATABLE READ vẫn ra snapshot cũ.
+%%% quiz
+? Hai request cùng đọc `stock = 5` rồi cùng ghi `stock = 4`. Đây là lỗi gì?
+- Dirty read
+- Phantom read
+* Lost update
+? Isolation level mặc định của MySQL InnoDB là gì?
+- READ COMMITTED
+* REPEATABLE READ
+- SERIALIZABLE
+? Câu `UPDATE ... WHERE id = ? AND version = ?` trả về 0 dòng bị ảnh hưởng. Điều đó nghĩa là gì?
+* Có transaction khác đã sửa dòng này sau khi ta đọc, tức là có xung đột
+- Câu UPDATE bị lỗi cú pháp
+- Dòng đã được khoá
+? Vì sao vòng retry của optimistic locking phải nằm NGOÀI `@Transactional`?
+* Vì mỗi lần thử cần một transaction mới để đọc được version mới nhất
+- Vì Spring không cho phép vòng lặp trong transaction
+- Vì như vậy chạy nhanh hơn
+? Method `@Transactional` ném một checked exception (`IOException`). Theo mặc định thì sao?
+- Rollback
+* Commit, vì mặc định chỉ rollback với RuntimeException và Error
+- Ném lỗi khi khởi động
+%%% hints
+- Kiểm tra `amount <= 0` thì ném `IllegalArgumentException` trước, ngoài vòng lặp.
+- Viết vòng `for (int attempt = 1; attempt <= maxAttempts; attempt++)`. Trong mỗi vòng: `find` để lấy bản mới, kiểm tra số dư (không đủ thì ném `IllegalStateException` ngay, không retry), rồi gọi `updateIfVersion(id, balance - amount, a.version())`.
+- `updateIfVersion` trả `1` là thành công, trả về `find(id)`. Trả `0` thì thử lại. Hết số lần thử thì ném `OptimisticLockException`.
+- `deposit` cũng dùng đúng vòng lặp đó, chỉ khác là cộng tiền. Có thể tách hàm chung nhận một `LongUnaryOperator`.
+%%% starter
+import java.util.HashMap;
+import java.util.Map;
+import java.util.NoSuchElementException;
+
+record Account(long id, long balance, int version) {
+}
+
+class OptimisticLockException extends RuntimeException {
+    OptimisticLockException(String message) { super(message); }
+}
+
+/** Giả lập bảng account (CHO SẴN, không cần sửa). */
+class AccountStore {
+    private final Map<Long, Account> rows = new HashMap<>();
+
+    synchronized void insert(long id, long balance) { rows.put(id, new Account(id, balance, 0)); }
+
+    synchronized Account find(long id) {
+        Account a = rows.get(id);
+        if (a == null) throw new NoSuchElementException("Không có tài khoản " + id);
+        return a;
+    }
+
+    /** UPDATE account SET balance=?, version=version+1 WHERE id=? AND version=?  → số dòng bị ảnh hưởng. */
+    synchronized int updateIfVersion(long id, long newBalance, int expectedVersion) {
+        Account a = rows.get(id);
+        if (a == null || a.version() != expectedVersion) return 0;
+        rows.put(id, new Account(id, newBalance, a.version() + 1));
+        return 1;
+    }
+}
+
+class WalletService {
+    private final AccountStore store;
+    private final int maxAttempts;
+
+    WalletService(AccountStore store, int maxAttempts) {
+        this.store = store;
+        this.maxAttempts = maxAttempts;
+    }
+
+    /**
+     * Rút tiền theo optimistic locking: đọc → kiểm tra → updateIfVersion, xung đột thì thử lại (tối đa maxAttempts lần).
+     * amount <= 0 → IllegalArgumentException; không đủ tiền → IllegalStateException; hết số lần thử → OptimisticLockException.
+     */
+    Account withdraw(long id, long amount) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Nạp tiền, cùng cơ chế. */
+    Account deposit(long id, long amount) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+class Tests {
+    static void parallel(int threads, Runnable body) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> fs = new ArrayList<>();
+        for (int i = 0; i < threads; i++) fs.add(pool.submit(() -> {
+            start.await();
+            body.run();
+            return null;
+        }));
+        start.countDown();
+        for (Future<?> f : fs) f.get();
+        pool.shutdown();
+    }
+
+    static void run(T t) {
+        t.test("rút tiền thành công, version tăng", () -> {
+            AccountStore s = new AccountStore();
+            s.insert(1, 1000);
+            Account a = new WalletService(s, 3).withdraw(1, 300);
+            T.eq(700L, a.balance());
+            T.eq(1, a.version());
+            T.eq(700L, s.find(1).balance());
+        });
+        t.test("nạp tiền", () -> {
+            AccountStore s = new AccountStore();
+            s.insert(1, 10);
+            T.eq(60L, new WalletService(s, 3).deposit(1, 50).balance());
+        });
+        t.test("không đủ tiền → IllegalStateException, số dư giữ nguyên", () -> {
+            AccountStore s = new AccountStore();
+            s.insert(1, 100);
+            T.throwsEx(IllegalStateException.class, () -> new WalletService(s, 3).withdraw(1, 101));
+            T.eq(100L, s.find(1).balance());
+            T.eq(0, s.find(1).version());
+        });
+        t.test("amount <= 0 → IllegalArgumentException", () -> {
+            AccountStore s = new AccountStore();
+            s.insert(1, 100);
+            T.throwsEx(IllegalArgumentException.class, () -> new WalletService(s, 3).withdraw(1, 0));
+            T.throwsEx(IllegalArgumentException.class, () -> new WalletService(s, 3).deposit(1, -5));
+        });
+        t.test("xung đột mãi → thử đúng maxAttempts lần rồi ném OptimisticLockException", () -> {
+            int[] calls = {0};
+            AccountStore always = new AccountStore() {
+                @Override
+                synchronized int updateIfVersion(long id, long newBalance, int expectedVersion) {
+                    calls[0]++;
+                    return 0;
+                }
+            };
+            always.insert(1, 100);
+            T.throwsEx(OptimisticLockException.class, () -> new WalletService(always, 3).withdraw(1, 10));
+            T.eq("số lần gọi updateIfVersion", 3, calls[0]);
+        });
+        t.test("xung đột 1 lần rồi thành công nhờ retry", () -> {
+            int[] calls = {0};
+            AccountStore flaky = new AccountStore() {
+                @Override
+                synchronized int updateIfVersion(long id, long newBalance, int expectedVersion) {
+                    if (calls[0]++ == 0) {
+                        super.updateIfVersion(id, find(id).balance() - 1, expectedVersion); // người khác rút 1 trước
+                        return 0;
+                    }
+                    return super.updateIfVersion(id, newBalance, expectedVersion);
+                }
+            };
+            flaky.insert(1, 100);
+            T.eq("phải đọc lại số dư mới (99) trước khi trừ 10", 89L, new WalletService(flaky, 3).withdraw(1, 10).balance());
+        });
+        t.test("8 thread x 25 lần rút 1: không mất lần cập nhật nào", () -> {
+            AccountStore s = new AccountStore();
+            s.insert(1, 1000);
+            WalletService w = new WalletService(s, 10_000);
+            parallel(8, () -> { for (int i = 0; i < 25; i++) w.withdraw(1, 1); });
+            T.eq(800L, s.find(1).balance());
+            T.eq(200, s.find(1).version());
+        });
+    }
+}
+%%% solution
+import java.util.HashMap;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.function.LongUnaryOperator;
+
+record Account(long id, long balance, int version) {
+}
+
+class OptimisticLockException extends RuntimeException {
+    OptimisticLockException(String message) { super(message); }
+}
+
+class AccountStore {
+    private final Map<Long, Account> rows = new HashMap<>();
+
+    synchronized void insert(long id, long balance) { rows.put(id, new Account(id, balance, 0)); }
+
+    synchronized Account find(long id) {
+        Account a = rows.get(id);
+        if (a == null) throw new NoSuchElementException("Không có tài khoản " + id);
+        return a;
+    }
+
+    synchronized int updateIfVersion(long id, long newBalance, int expectedVersion) {
+        Account a = rows.get(id);
+        if (a == null || a.version() != expectedVersion) return 0;
+        rows.put(id, new Account(id, newBalance, a.version() + 1));
+        return 1;
+    }
+}
+
+class WalletService {
+    private final AccountStore store;
+    private final int maxAttempts;
+
+    WalletService(AccountStore store, int maxAttempts) {
+        this.store = store;
+        this.maxAttempts = maxAttempts;
+    }
+
+    Account withdraw(long id, long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("amount phải > 0");
+        return change(id, balance -> {
+            if (balance < amount) throw new IllegalStateException("Không đủ tiền");
+            return balance - amount;
+        });
+    }
+
+    Account deposit(long id, long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("amount phải > 0");
+        return change(id, balance -> balance + amount);
+    }
+
+    /** Mỗi vòng lặp ~ một transaction mới: đọc bản mới nhất → tính → UPDATE có điều kiện version. */
+    private Account change(long id, LongUnaryOperator newBalance) {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            Account a = store.find(id);
+            long next = newBalance.applyAsLong(a.balance());
+            if (store.updateIfVersion(id, next, a.version()) == 1) return store.find(id);
+        }
+        throw new OptimisticLockException("Xung đột cập nhật tài khoản " + id + " sau " + maxAttempts + " lần thử");
+    }
+}

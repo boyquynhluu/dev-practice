@@ -1,0 +1,195 @@
+%%% meta
+id: py-06
+title: Iterator và generator — xử lý dữ liệu lớn, phân trang
+level: intermediate
+topic: Iterator
+order: 6
+%%% theory
+## Giao thức iterator
+
+Một object dùng được trong `for` nếu có `__iter__()`. Hàm này trả về một iterator, tức object có `__next__()`. Khi hết phần tử, `__next__()` ném `StopIteration`.
+
+## Generator: viết iterator bằng `yield`
+
+```python
+def read_lines(path):
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            yield line.rstrip("\n")     # tạm dừng, trả 1 giá trị, lần sau chạy tiếp từ đây
+```
+
+- **Lazy**: chỉ tính khi có người lấy. Đọc file 10GB mà RAM chỉ cần giữ một dòng.
+- Generator **chỉ duyệt được một lần**.
+- Code trong thân generator *chưa chạy* cho đến lần `next()` đầu tiên, kể cả đoạn validate tham số. Muốn báo lỗi ngay khi gọi hàm thì tách ra: một hàm thường validate rồi trả về một generator bên trong.
+
+## Gọi API phân trang
+
+```python
+def all_items(fetch_page):
+    page = 1
+    while page is not None:
+        data = fetch_page(page)
+        yield from data["items"]        # yield từng phần tử của list
+        page = data["next"]
+```
+
+Nơi gọi chỉ cần `for item in all_items(api)`. Nếu nó `break` sớm thì **các trang sau không bị gọi**, tiết kiệm request.
+
+## itertools nên biết
+
+`islice(it, n)` (lấy n phần tử đầu), `chain`, `groupby` (dữ liệu phải sort trước), `count`, `accumulate`, `batched` (Python 3.12+).
+
+`collections.deque(maxlen=n)` hợp để làm cửa sổ trượt.
+%%% quiz
+? Generator khác list ở điểm nào?
+* Tính lười (lazy), chỉ duyệt được một lần, tốn ít bộ nhớ
+- Nhanh hơn trong mọi trường hợp
+- Truy cập được theo index
+? `yield from xs` tương đương với gì?
+- return xs
+* for x in xs: yield x
+- yield xs
+%%% hints
+- chunked: một hàm thường kiểm tra `size`, rồi trả `_gen()`; bên trong `_gen`, gom vào `buf`, đủ size thì `yield buf` và reset `buf`; cuối cùng nếu `buf` còn phần tử thì yield nốt.
+- sliding_window: `deque(maxlen=n)`, append từng phần tử; khi `len == n` thì `yield tuple(win)`.
+- Countdown: `__iter__` trả `self`; `__next__` khi hết thì `raise StopIteration`.
+%%% starter
+from collections import deque
+from itertools import islice
+
+
+def chunked(iterable, size: int):
+    """chunked(range(5), 2) -> [0,1], [2,3], [4]. size <= 0 -> ValueError NGAY khi gọi."""
+    return iter([])  # TODO
+
+
+def all_items(fetch_page):
+    """fetch_page(page) -> {"items": [...], "next": số trang tiếp hoặc None}. Bắt đầu từ trang 1, lazy."""
+    return iter([])  # TODO
+
+
+def sliding_window(iterable, n: int):
+    """sliding_window([1,2,3,4], 3) -> (1,2,3), (2,3,4)"""
+    return iter([])  # TODO
+
+
+class Countdown:
+    """for x in Countdown(3): -> 3, 2, 1"""
+
+    def __init__(self, start: int):
+        self.current = start
+
+    # TODO: __iter__, __next__
+
+
+def first_n(iterable, n: int) -> list:
+    return []  # TODO (gợi ý: islice)
+%%% tests
+from itertools import count
+
+from checker import test, eq, ok, raises
+from solution import *
+
+
+@test("chunked")
+def _():
+    eq([[0, 1], [2, 3], [4]], list(chunked(range(5), 2)))
+    eq([], list(chunked([], 3)))
+
+
+@test("chunked là generator (lazy, dùng được với chuỗi vô hạn)")
+def _():
+    gen = chunked(count(), 3)
+    eq([0, 1, 2], next(gen))
+    eq([3, 4, 5], next(gen))
+
+
+@test("chunked validate ngay khi gọi")
+def _():
+    raises(ValueError, chunked, [1], 0)
+
+
+@test("all_items duyệt hết các trang")
+def _():
+    pages = {1: {"items": [1, 2], "next": 2}, 2: {"items": [3], "next": 3}, 3: {"items": [], "next": None}}
+    eq([1, 2, 3], list(all_items(lambda p: pages[p])))
+
+
+@test("all_items lazy: break sớm thì không gọi trang sau")
+def _():
+    calls = []
+
+    def fetch(p):
+        calls.append(p)
+        return {"items": [p * 10, p * 10 + 1], "next": p + 1}
+
+    eq([10, 11, 20], first_n(all_items(fetch), 3))
+    eq([1, 2], calls)
+
+
+@test("sliding_window")
+def _():
+    eq([(1, 2, 3), (2, 3, 4)], list(sliding_window([1, 2, 3, 4], 3)))
+    eq([], list(sliding_window([1], 2)))
+
+
+@test("Countdown theo giao thức iterator")
+def _():
+    eq([3, 2, 1], list(Countdown(3)))
+    it = iter(Countdown(1))
+    eq(1, next(it))
+    raises(StopIteration, next, it)
+%%% solution
+from collections import deque
+from itertools import islice
+
+
+def chunked(iterable, size: int):
+    if size <= 0:
+        raise ValueError("size phải > 0")
+
+    def _gen():
+        buf = []
+        for x in iterable:
+            buf.append(x)
+            if len(buf) == size:
+                yield buf
+                buf = []
+        if buf:
+            yield buf
+
+    return _gen()
+
+
+def all_items(fetch_page):
+    page = 1
+    while page is not None:
+        data = fetch_page(page)
+        yield from data["items"]
+        page = data["next"]
+
+
+def sliding_window(iterable, n: int):
+    win = deque(maxlen=n)
+    for x in iterable:
+        win.append(x)
+        if len(win) == n:
+            yield tuple(win)
+
+
+class Countdown:
+    def __init__(self, start: int):
+        self.current = start
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.current <= 0:
+            raise StopIteration
+        self.current -= 1
+        return self.current + 1
+
+
+def first_n(iterable, n: int) -> list:
+    return list(islice(iterable, n))

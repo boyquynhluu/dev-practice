@@ -1,0 +1,96 @@
+%%% meta
+id: java-35
+title: Monitoring — Prometheus, structured logging, correlation ID và SLO
+level: intermediate
+topic: Monitoring
+order: 35
+%%% theory
+## Ba trụ cột của observability
+
+| | Trả lời câu hỏi | Công cụ |
+|---|---|---|
+| **Metrics** | Hệ thống có khoẻ không? Bao nhiêu, nhanh hay chậm? | Micrometer → Prometheus → Grafana |
+| **Logs** | Chuyện gì đã xảy ra với request này? | Logback JSON → Loki / ELK |
+| **Traces** | Request đi qua những service nào, chậm ở chặng nào? | OpenTelemetry → Tempo / Jaeger |
+
+## Prometheus và Micrometer
+
+Spring Boot Actuator kết hợp `micrometer-registry-prometheus` mở endpoint `/actuator/prometheus`. Prometheus **kéo (pull)** dữ liệu từ endpoint này theo chu kỳ.
+
+| Loại metric | Đặc điểm | Ví dụ |
+|---|---|---|
+| **Counter** | Chỉ tăng (reset khi restart) | `http_server_requests_seconds_count`, `orders_created_total` |
+| **Gauge** | Lên xuống tuỳ thời điểm | số connection đang dùng, độ dài hàng đợi |
+| **Histogram / Timer** | Phân bố theo bucket, dùng để tính **percentile** | độ trễ request |
+
+```java
+Counter.builder("orders_created_total").tag("channel", channel).register(registry).increment();
+```
+
+```promql
+sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+  / sum(rate(http_server_requests_seconds_count[5m]))                    # tỉ lệ lỗi
+histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))   # p99
+```
+
+- **Cardinality của label**: mỗi tổ hợp label là một time series riêng. **Không** dùng `userId`, `orderId`, email hay URL đầy đủ chưa template làm label, vì Prometheus sẽ bùng nổ bộ nhớ.
+- Nhìn **p95/p99**, đừng chỉ nhìn trung bình. Trung bình 100 ms vẫn có thể có 1% request mất 5 giây.
+- Hai bộ chỉ số nên theo dõi: **RED** cho service (Rate, Errors, Duration) và **USE** cho tài nguyên (Utilization, Saturation, Errors).
+
+## Structured logging và correlation ID
+
+Log dạng JSON có field cố định thì tìm kiếm và lọc được:
+
+```json
+{"ts":"2026-11-24T10:00:00Z","level":"ERROR","logger":"OrderService","msg":"payment failed",
+ "traceId":"4bf92f35…","orderId":"A-1001","durationMs":5003}
+```
+
+- Spring Boot 3.4+: `logging.structured.format.console=ecs` (hoặc `logstash`).
+- **Correlation ID / trace ID**: một filter đọc header `traceparent` (W3C) hoặc `X-Request-Id`, nếu không có thì sinh mới. Giá trị đó được đặt vào **MDC** để mọi dòng log trong request tự có nó, và được **chuyền tiếp** sang các service gọi sau. Micrometer Tracing làm việc này tự động.
+- Với `@Async` hay thread pool, MDC không tự đi theo sang thread mới. Cần context propagation (`ContextPropagatingTaskDecorator`).
+- **Không ghi log** mật khẩu, token, số thẻ hay thông tin cá nhân. Hãy che (mask) chúng.
+
+## SLI, SLO, error budget và burn rate
+
+- **SLI**: chỉ số đo được, ví dụ tỉ lệ request thành công và nhanh hơn 300 ms.
+- **SLO**: mục tiêu, ví dụ 99,9% request đạt yêu cầu trong cửa sổ 30 ngày.
+- **Error budget** = 100% − SLO = 0,1%, tức khoảng **43 phút** "được phép lỗi" mỗi tháng. Còn budget thì cứ deploy tính năng mới. Hết budget thì ưu tiên làm cho hệ thống ổn định.
+- **Burn rate** là tốc độ tiêu budget. Burn rate = 1 nghĩa là vừa đúng hết budget vào cuối cửa sổ 30 ngày. Kiểu cảnh báo được khuyên dùng là **multi-window, multi-burn-rate**:
+  - Burn rate **14,4** trong 1 giờ (và cả 5 phút): **gọi người trực ngay**, vì cứ thế này thì khoảng 2 ngày là hết budget.
+  - Burn rate **6** trong 6 giờ: gọi người trực.
+  - Burn rate **1** trong 3 ngày: tạo ticket.
+- Cảnh báo dựa trên **triệu chứng mà người dùng cảm nhận** (tỉ lệ lỗi, độ trễ), không dựa trên nguyên nhân (CPU 80%). Mỗi cảnh báo phải **cần một người hành động**. Không thì chỉ gây nhiễu, và người trực sẽ dần bỏ qua mọi cảnh báo.
+%%% quiz
+? Số connection đang dùng trong pool nên đo bằng loại metric nào?
+- Counter
+* Gauge
+- Histogram
+? Vì sao KHÔNG nên dùng `userId` làm label của metric Prometheus?
+* Vì cardinality cao: mỗi user sinh một time series, Prometheus sẽ bùng nổ bộ nhớ
+- Vì Prometheus không hỗ trợ chuỗi
+- Vì lộ dữ liệu cá nhân, ngoài ra không sao
+? Correlation ID được dùng để làm gì?
+- Mã hoá log
+* Nối mọi dòng log và span của cùng một request xuyên qua nhiều service
+- Đếm số request
+? SLO 99,9% trong 30 ngày. Error budget xấp xỉ bao nhiêu?
+- 4,3 phút
+* 43 phút
+- 7,2 giờ
+? Cảnh báo nào được khuyến nghị?
+- CPU > 80% trong 1 phút
+* Burn rate của error budget cao trên cả cửa sổ ngắn lẫn cửa sổ dài
+- Mỗi lần có một log ERROR
+? Vì sao nên nhìn độ trễ p99 thay vì chỉ nhìn trung bình?
+* Vì trung bình che mất các request rất chậm mà một phần người dùng vẫn gặp
+- Vì p99 dễ tính hơn
+- Vì Prometheus không tính được trung bình
+%%% hints
+- Thêm `micrometer-registry-prometheus` vào `backend-java`, mở `/actuator/prometheus`, rồi tìm metric `http_server_requests_seconds`.
+- Tạo một Counter `lessons_run_total{mode, passed}` trong `RunnerController`, chạy vài bài rồi xem số đếm tăng.
+- Chạy Prometheus và Grafana bằng docker compose. Viết các truy vấn PromQL cho tỉ lệ lỗi và p99, rồi dựng một dashboard RED.
+- Viết filter `OncePerRequestFilter` đặt `MDC.put("requestId", ...)`, rồi cấu hình log JSON để mỗi dòng log có `requestId`.
+%%% starter
+%%% tests
+%%% solution

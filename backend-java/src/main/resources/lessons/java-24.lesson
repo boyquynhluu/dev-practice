@@ -1,0 +1,85 @@
+%%% meta
+id: java-24
+title: Microservices — Ranh giới service, giao tiếp và nhất quán dữ liệu
+level: advanced
+topic: Microservices
+order: 24
+%%% theory
+## Microservice là gì, và cái giá của nó
+
+Mỗi service **triển khai độc lập**, **sở hữu dữ liệu riêng**, do **một team** chịu trách nhiệm. Lợi ích là scale riêng, deploy riêng và mỗi service có thể chọn công nghệ riêng. Cái giá phải trả: lỗi mạng, độ trễ, **không còn transaction ACID xuyên service**, phải giám sát và trace phân tán, và vận hành phức tạp hơn nhiều.
+
+> Nếu chưa có ranh giới sạch trong monolith thì tách ra microservice chỉ tạo thành một **distributed monolith**: vẫn dính chặt vào nhau, mà lại thêm lỗi mạng.
+
+## Vạch ranh giới service
+
+- Chia theo **năng lực nghiệp vụ** hoặc **bounded context** (Ordering, Payment, Inventory). Không chia theo tầng kỹ thuật như "service DB" hay "service validation".
+- Dấu hiệu ranh giới sai:
+  - Một tính năng mới luôn phải sửa và deploy 3 service **cùng lúc**.
+  - Hai service gọi qua lại nhau liên tục (chatty).
+  - Hai service dùng chung một bảng.
+- **Database per service:** không service nào đọc hay ghi thẳng vào DB của service khác.
+
+## Giao tiếp
+
+| | Đồng bộ (REST, gRPC) | Bất đồng bộ (Kafka, RabbitMQ) |
+|---|---|---|
+| Hợp với | Truy vấn cần kết quả ngay | Thông báo một việc **đã xảy ra** |
+| Coupling | Thời gian: B chết thì A cũng lỗi | Lỏng: B chết thì message chờ trong hàng đợi |
+| Rủi ro | Lỗi dây chuyền, độ trễ cộng dồn | Eventual consistency, nhận trùng message, khó debug |
+
+Với gọi đồng bộ, **bắt buộc** phải có: timeout, retry có backoff (chỉ cho thao tác idempotent), circuit breaker và bulkhead.
+
+## Service discovery và API gateway
+
+- **Service discovery**: instance thay đổi liên tục (autoscale, deploy). Client tra địa chỉ qua registry (Eureka, Consul) hoặc qua DNS và Service của Kubernetes.
+- **API gateway** là cửa ngõ duy nhất cho client bên ngoài. Nó lo định tuyến, xác thực JWT, rate limit, CORS, và gộp các lời gọi (BFF, backend for frontend). Ví dụ: Spring Cloud Gateway, Kong, Nginx, AWS API Gateway.
+
+## Nhất quán dữ liệu giữa các service
+
+Không có transaction phân tán (tránh 2PC vì chậm và dễ treo). Thay vào đó dùng **Saga**: một chuỗi transaction cục bộ, mỗi bước có một **hành động bù** (compensation) khi các bước sau thất bại.
+
+```
+Order: tạo PENDING → Payment: trừ tiền → Inventory: giữ hàng ✘ hết hàng
+                   ← Payment: hoàn tiền (bù) ← Order: CANCELLED (bù)
+```
+
+- **Choreography**: mỗi service lắng nghe event rồi tự làm bước tiếp theo. Đơn giản, nhưng khó nhìn thấy toàn bộ luồng.
+- **Orchestration**: một orchestrator điều phối từng bước (Temporal, Camunda, hoặc một state machine tự viết). Rõ ràng và dễ theo dõi hơn.
+- Dùng **Outbox pattern** để ghi DB và gửi event một cách tin cậy. Ghi thay đổi và event vào cùng một transaction cục bộ, rồi một tiến trình khác đọc bảng outbox để đẩy event lên broker.
+
+## Khi nào nên chọn microservices
+
+Có nhiều team cần deploy độc lập, có phần hệ thống cần scale khác hẳn phần còn lại, và đã có nền tảng vận hành tốt (CI/CD, giám sát, tracing, container orchestration). Không có những điều kiện đó thì modular monolith gần như luôn là lựa chọn tốt hơn.
+%%% quiz
+? Dấu hiệu nào cho thấy ranh giới service đang SAI?
+- Mỗi service có DB riêng
+* Mỗi tính năng mới đều phải sửa và deploy nhiều service cùng lúc
+- Service giao tiếp với nhau qua event
+? "Database per service" nghĩa là gì?
+* Mỗi service sở hữu dữ liệu của mình, service khác không đọc hay ghi thẳng vào đó
+- Mỗi service phải dùng một hệ quản trị DB khác nhau
+- Mọi service dùng chung một DB nhưng khác user
+? Đặt hàng gồm 3 bước ở 3 service, và bước cuối thất bại. Cách xử lý phổ biến là gì?
+- Two-phase commit xuyên 3 service
+* Saga: chạy các hành động bù (hoàn tiền, huỷ đơn) cho những bước đã làm
+- Bỏ qua lỗi
+? Trách nhiệm nào thường KHÔNG thuộc về API gateway?
+- Xác thực JWT và rate limit
+- Định tuyến request tới service
+* Chứa logic nghiệp vụ tính giá đơn hàng
+? Vì sao gọi REST đồng bộ giữa các service bắt buộc phải có timeout và circuit breaker?
+* Để một service chậm hay chết không kéo cả chuỗi service sập theo (lỗi dây chuyền)
+- Để tăng throughput
+- Vì REST không hỗ trợ retry
+? Outbox pattern giải quyết vấn đề gì?
+- Tăng tốc truy vấn
+* Ghi DB và phát event một cách tin cậy, không bị lệch khi một trong hai thất bại
+- Mã hoá event
+%%% hints
+- Vẽ sơ đồ bounded context cho một hệ thống bán hàng: Catalog, Ordering, Payment, Inventory, Shipping. Ghi rõ event nào đi từ context nào sang context nào.
+- Viết saga "đặt hàng" dưới dạng bảng trạng thái: mỗi bước gồm hành động, event phát ra khi thành công, và hành động bù khi thất bại.
+- Đọc lại bài java-15 (Circuit breaker) và nghĩ xem bạn sẽ đặt circuit breaker ở đâu trong luồng Ordering → Payment.
+%%% starter
+%%% tests
+%%% solution

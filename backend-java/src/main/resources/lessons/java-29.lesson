@@ -1,0 +1,267 @@
+%%% meta
+id: java-29
+title: Distributed Systems — Idempotency key và chống xử lý trùng
+level: advanced
+topic: Distributed Systems
+order: 29
+%%% theory
+## Mạng không đáng tin
+
+Trong hệ phân tán, một lời gọi có **ba** kết quả chứ không phải hai: thành công, thất bại, và **không biết** (timeout). Khi timeout, client không biết server đã làm hay chưa:
+
+```
+client ── POST /payments ──▶ server: trừ tiền ✔
+client ◀──── (mất gói / timeout) ──
+client ── retry POST /payments ──▶ server: trừ tiền LẦN 2 ✘
+```
+
+Retry là việc bắt buộc. Mobile mất sóng, load balancer cắt kết nối, Kafka giao lại message. Vì vậy **phía nhận phải idempotent**: làm một lần hay N lần thì kết quả vẫn như nhau.
+
+## Idempotency key
+
+- Client tạo một khoá **duy nhất cho mỗi ý định**, thường là UUID, và gửi kèm: `Idempotency-Key: 6f1c…`. Khi retry thì **giữ nguyên** khoá đó.
+- Server lưu `key → (fingerprint của request, response)`:
+  - Lần đầu gặp key: xử lý, **lưu lại response**, rồi trả về.
+  - Gặp lại key với **cùng payload**: trả lại **đúng response cũ** và **không** xử lý lại.
+  - Gặp lại key với **payload khác**: trả **422**, vì client đang dùng sai khoá.
+  - Key có **TTL** (ví dụ 24 giờ) để kho lưu không phình mãi.
+- **Hai request trùng key đến cùng lúc** phải được xử lý tuần tự theo key: khoá theo key, hoặc `INSERT` key với ràng buộc UNIQUE trước khi xử lý. Nếu không, cả hai có thể cùng thấy "chưa có" và cùng trừ tiền.
+- **Lỗi tạm thời** (5xx, timeout gọi đối tác) thì **không lưu kết quả**, để client retry được. Lỗi của client (4xx) thì có thể lưu lại.
+
+Stripe, PayPal và các API thanh toán đều làm theo cách này.
+
+## Deduplication ở consumer
+
+Kafka và RabbitMQ đảm bảo giao **ít nhất một lần** (at-least-once), nên consumer có thể nhận trùng message. Cách xử lý thường gặp:
+- Bảng `processed_messages(message_id PRIMARY KEY)`: ghi vào bảng này **trong cùng transaction** với thay đổi nghiệp vụ. Nếu bị trùng khoá thì bỏ qua message.
+- Hoặc thiết kế thao tác idempotent tự nhiên: `SET status = 'PAID'` thay vì `balance = balance - x`, hay dùng upsert theo id.
+
+## Bài tập
+
+Viết `IdempotentPaymentService` bao quanh một `PaymentGateway` có tác dụng phụ (trừ tiền thật). Service cần lưu kết quả theo key, có TTL, phát hiện key bị dùng lại với payload khác, xử lý request đồng thời, và không lưu khi gặp lỗi tạm thời.
+%%% quiz
+? Client gửi `POST /payments` thì bị timeout. Điều nào chắc chắn đúng?
+- Server chưa trừ tiền
+- Server đã trừ tiền
+* Không biết được, server có thể đã xử lý xong
+? Retry với cùng Idempotency-Key nhưng `amount` khác. Server nên làm gì?
+- Xử lý như một request mới
+- Trả lại response cũ
+* Trả 422 vì key đã được dùng cho một request khác
+? Vì sao không nên lưu kết quả khi gọi cổng thanh toán bị lỗi 5xx hay timeout?
+* Để client retry cùng key thì lần sau được xử lý lại
+- Để tiết kiệm bộ nhớ
+- Vì 5xx luôn có nghĩa là đã trừ tiền
+? Consumer Kafka nhận trùng message. Cách chống trùng an toàn là gì?
+- Tắt retry ở producer
+* Ghi `message_id` vào bảng có UNIQUE trong cùng transaction với thay đổi nghiệp vụ
+- Commit offset trước khi xử lý
+%%% hints
+- Lưu `record Stored(String fingerprint, PaymentResponse response, long at)` trong một `ConcurrentHashMap<String, Stored>`. Fingerprint có thể là `accountId + "|" + amount`.
+- Kiểm tra key rỗng hoặc null trước, trả `new PaymentResponse(400, null, ...)` và không gọi gateway.
+- Tuần tự hoá theo key: `synchronized (locks.computeIfAbsent(key, k -> new Object())) { ... }`. Bên trong khối: đọc `Stored`, bỏ qua nếu đã quá TTL (`now - at >= ttl`), so fingerprint (khác thì 422, giống thì trả response cũ).
+- Gọi gateway trong `try`. Thành công thì tạo response 201 với paymentId, lưu lại rồi trả về. Có `RuntimeException` thì trả 502 và **không** lưu.
+%%% starter
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
+
+record PaymentRequest(String idempotencyKey, String accountId, long amount) {
+}
+
+/** status: 201 thành công, 400 thiếu key, 422 key dùng cho request khác, 502 lỗi cổng thanh toán. */
+record PaymentResponse(int status, String paymentId, String message) {
+}
+
+/** Có tác dụng phụ: mỗi lần gọi là trừ tiền thật một lần. Trả về paymentId. */
+interface PaymentGateway {
+    String charge(String accountId, long amount);
+}
+
+class IdempotentPaymentService {
+    private final PaymentGateway gateway;
+    private final LongSupplier clock;
+    private final long ttlMillis;
+
+    IdempotentPaymentService(PaymentGateway gateway, LongSupplier clockMillis, long ttlMillis) {
+        this.gateway = gateway;
+        this.clock = clockMillis;
+        this.ttlMillis = ttlMillis;
+    }
+
+    PaymentResponse pay(PaymentRequest req) {
+        // TODO: đang trừ tiền mỗi lần được gọi
+        String id = gateway.charge(req.accountId(), req.amount());
+        return new PaymentResponse(201, id, "OK");
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class Tests {
+    static final class FakeClock implements java.util.function.LongSupplier {
+        long now = 0;
+
+        public long getAsLong() { return now; }
+    }
+
+    static final class CountingGateway implements PaymentGateway {
+        final AtomicInteger calls = new AtomicInteger();
+        volatile boolean failNext = false;
+
+        public String charge(String accountId, long amount) {
+            if (failNext) {
+                failNext = false;
+                calls.incrementAndGet();
+                throw new RuntimeException("timeout");
+            }
+            try {
+                Thread.sleep(20); // gọi mạng
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            return "pay-" + calls.incrementAndGet();
+        }
+    }
+
+    static void run(T t) {
+        t.test("lần đầu: trừ tiền, trả 201", () -> {
+            CountingGateway g = new CountingGateway();
+            PaymentResponse r = new IdempotentPaymentService(g, new FakeClock(), 60_000).pay(new PaymentRequest("k1", "acc", 100));
+            T.eq(201, r.status());
+            T.eq("pay-1", r.paymentId());
+            T.eq(1, g.calls.get());
+        });
+        t.test("retry cùng key + cùng payload: trả response cũ, không trừ lần 2", () -> {
+            CountingGateway g = new CountingGateway();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, new FakeClock(), 60_000);
+            PaymentResponse a = s.pay(new PaymentRequest("k1", "acc", 100));
+            PaymentResponse b = s.pay(new PaymentRequest("k1", "acc", 100));
+            T.eq(a, b);
+            T.eq(1, g.calls.get());
+        });
+        t.test("key khác → xử lý riêng", () -> {
+            CountingGateway g = new CountingGateway();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, new FakeClock(), 60_000);
+            s.pay(new PaymentRequest("k1", "acc", 100));
+            T.eq("pay-2", s.pay(new PaymentRequest("k2", "acc", 100)).paymentId());
+        });
+        t.test("cùng key nhưng payload khác → 422, không trừ tiền", () -> {
+            CountingGateway g = new CountingGateway();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, new FakeClock(), 60_000);
+            s.pay(new PaymentRequest("k1", "acc", 100));
+            T.eq(422, s.pay(new PaymentRequest("k1", "acc", 999)).status());
+            T.eq(1, g.calls.get());
+        });
+        t.test("thiếu key → 400, không gọi gateway", () -> {
+            CountingGateway g = new CountingGateway();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, new FakeClock(), 60_000);
+            T.eq(400, s.pay(new PaymentRequest(null, "acc", 1)).status());
+            T.eq(400, s.pay(new PaymentRequest("  ", "acc", 1)).status());
+            T.eq(0, g.calls.get());
+        });
+        t.test("hết TTL → key được xử lý lại như mới", () -> {
+            CountingGateway g = new CountingGateway();
+            FakeClock c = new FakeClock();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, c, 1_000);
+            s.pay(new PaymentRequest("k1", "acc", 100));
+            c.now += 999;
+            T.eq("pay-1", s.pay(new PaymentRequest("k1", "acc", 100)).paymentId());
+            c.now += 1;
+            T.eq("pay-2", s.pay(new PaymentRequest("k1", "acc", 100)).paymentId());
+        });
+        t.test("lỗi cổng thanh toán → 502 và KHÔNG lưu, retry được", () -> {
+            CountingGateway g = new CountingGateway();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, new FakeClock(), 60_000);
+            g.failNext = true;
+            T.eq(502, s.pay(new PaymentRequest("k1", "acc", 100)).status());
+            PaymentResponse retry = s.pay(new PaymentRequest("k1", "acc", 100));
+            T.eq(201, retry.status());
+            T.eq(2, g.calls.get());
+        });
+        t.test("10 request trùng key đến cùng lúc → chỉ trừ tiền 1 lần", () -> {
+            CountingGateway g = new CountingGateway();
+            IdempotentPaymentService s = new IdempotentPaymentService(g, new FakeClock(), 60_000);
+            ExecutorService pool = Executors.newFixedThreadPool(10);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<PaymentResponse>> fs = new ArrayList<>();
+            for (int i = 0; i < 10; i++) fs.add(pool.submit(() -> {
+                start.await();
+                return s.pay(new PaymentRequest("same", "acc", 100));
+            }));
+            start.countDown();
+            Set<String> ids = ConcurrentHashMap.newKeySet();
+            for (Future<PaymentResponse> f : fs) ids.add(f.get().paymentId());
+            pool.shutdown();
+            T.eq("số lần gọi gateway", 1, g.calls.get());
+            T.eq("mọi request nhận cùng paymentId", 1, ids.size());
+        });
+    }
+}
+%%% solution
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
+
+record PaymentRequest(String idempotencyKey, String accountId, long amount) {
+}
+
+record PaymentResponse(int status, String paymentId, String message) {
+}
+
+interface PaymentGateway {
+    String charge(String accountId, long amount);
+}
+
+class IdempotentPaymentService {
+    private record Stored(String fingerprint, PaymentResponse response, long at) {
+    }
+
+    private final PaymentGateway gateway;
+    private final LongSupplier clock;
+    private final long ttlMillis;
+    private final Map<String, Stored> results = new ConcurrentHashMap<>();
+    private final Map<String, Object> locks = new ConcurrentHashMap<>();
+
+    IdempotentPaymentService(PaymentGateway gateway, LongSupplier clockMillis, long ttlMillis) {
+        this.gateway = gateway;
+        this.clock = clockMillis;
+        this.ttlMillis = ttlMillis;
+    }
+
+    PaymentResponse pay(PaymentRequest req) {
+        String key = req.idempotencyKey();
+        if (key == null || key.isBlank()) return new PaymentResponse(400, null, "Thiếu Idempotency-Key");
+        String fingerprint = req.accountId() + "|" + req.amount();
+        synchronized (locks.computeIfAbsent(key, k -> new Object())) {
+            long now = clock.getAsLong();
+            Stored stored = results.get(key);
+            if (stored != null && now - stored.at() >= ttlMillis) {
+                results.remove(key);
+                stored = null;
+            }
+            if (stored != null) {
+                if (!stored.fingerprint().equals(fingerprint)) {
+                    return new PaymentResponse(422, null, "Idempotency-Key đã dùng cho một request khác");
+                }
+                return stored.response();
+            }
+            PaymentResponse response;
+            try {
+                response = new PaymentResponse(201, gateway.charge(req.accountId(), req.amount()), "OK");
+            } catch (RuntimeException e) {
+                return new PaymentResponse(502, null, "Cổng thanh toán lỗi, hãy thử lại: " + e.getMessage());
+            }
+            results.put(key, new Stored(fingerprint, response, now));
+            return response;
+        }
+    }
+}

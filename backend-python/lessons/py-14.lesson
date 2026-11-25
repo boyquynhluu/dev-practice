@@ -1,0 +1,253 @@
+%%% meta
+id: py-14
+title: Cache có TTL + LRU, chống cache stampede
+level: advanced
+topic: Hiệu năng
+order: 14
+%%% theory
+## Hai câu hỏi của mọi cache
+
+1. **Khi nào dữ liệu cũ?** Đặt **TTL** (time-to-live): sau `ttl` giây thì entry hết hạn và lần đọc sau sẽ nạp lại.
+2. **Đầy thì bỏ gì?** Dùng **LRU**, tức bỏ entry lâu chưa dùng nhất.
+
+`collections.OrderedDict` cho LRU gọn: `move_to_end(key)` đánh dấu vừa dùng, còn `popitem(last=False)` bỏ phần tử cũ nhất.
+
+## Đồng hồ inject được
+
+```python
+class TTLCache:
+    def __init__(self, maxsize, ttl, clock=time.monotonic): ...
+```
+
+Dùng `time.monotonic()` thay vì `time.time()`: đồng hồ hệ thống có thể bị chỉnh lùi (NTP), còn monotonic thì chỉ tăng. Trong test thì truyền vào một đồng hồ giả để tua thời gian, không cần `sleep`.
+
+## Cache stampede
+
+Một key "hot" vừa hết hạn, 100 request cùng lúc thấy miss, và cả 100 cùng truy vấn DB. Đó là cache stampede. Cách chữa: **mỗi key một lock**. Thread đầu tiên nạp dữ liệu; các thread khác chờ rồi dùng luôn kết quả vừa nạp (**double-checked**):
+
+```python
+with self._key_lock(key):
+    value = self.get(key, MISSING)       # kiểm tra lại sau khi có lock
+    if value is MISSING:
+        value = loader()
+        self.set(key, value)
+```
+
+## Thực tế
+
+Thường dùng `functools.lru_cache` (không có TTL), `cachetools.TTLCache`, hoặc Redis với `SET key value EX 60`. Khi có nhiều instance thì cache dùng chung (Redis) mới bảo đảm được tính nhất quán.
+%%% quiz
+? Vì sao dùng `time.monotonic()` thay vì `time.time()` để tính TTL?
+* monotonic không bị nhảy lùi khi đồng hồ hệ thống bị chỉnh
+- monotonic chính xác tới nano giây
+- time.time() chậm hơn
+? Cache stampede là gì?
+- Cache bị đầy
+* Nhiều request cùng miss một key và cùng lao vào nạp từ DB
+- Cache trả dữ liệu sai
+%%% hints
+- Lưu `OrderedDict[key] = (value, expires_at)`. Trong `get`: nếu hết hạn (`clock() >= expires_at`) thì xoá và trả default; còn hạn thì `move_to_end`.
+- `set`: gán xong thì `move_to_end`; nếu `len > maxsize` thì `popitem(last=False)`.
+- Dùng một `threading.Lock` chung bảo vệ dict, và `dict[key] -> Lock` cho từng key trong `get_or_load`.
+- `__len__`: chỉ đếm entry còn hạn.
+%%% starter
+import threading
+import time
+from collections import OrderedDict
+
+MISSING = object()
+
+
+class TTLCache:
+    def __init__(self, maxsize: int, ttl: float, clock=time.monotonic):
+        self.maxsize, self.ttl, self.clock = maxsize, ttl, clock
+        self._data = {}  # TODO: cần thứ tự LRU + thời điểm hết hạn
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)  # TODO: TTL + LRU
+
+    def set(self, key, value) -> None:
+        self._data[key] = value  # TODO: loại bỏ khi vượt maxsize
+
+    def delete(self, key) -> None:
+        self._data.pop(key, None)
+
+    def get_or_load(self, key, loader):
+        """Có trong cache thì trả; không có thì gọi loader() MỘT lần kể cả khi nhiều thread cùng gọi."""
+        value = self.get(key, MISSING)
+        if value is MISSING:
+            value = loader()
+            self.set(key, value)
+        return value
+
+    def __len__(self) -> int:
+        return len(self._data)  # TODO: chỉ đếm entry còn hạn
+%%% tests
+import threading
+import time
+
+from checker import test, eq, ok
+from solution import *
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+@test("get/set cơ bản")
+def _():
+    c = TTLCache(10, 60, FakeClock())
+    c.set("a", 1)
+    eq(1, c.get("a"))
+    eq("x", c.get("nope", "x"))
+
+
+@test("hết TTL thì miss")
+def _():
+    clock = FakeClock()
+    c = TTLCache(10, 5, clock)
+    c.set("a", 1)
+    clock.now += 4.9
+    eq(1, c.get("a"))
+    clock.now += 0.1
+    eq(None, c.get("a"))
+
+
+@test("set lại thì làm mới TTL")
+def _():
+    clock = FakeClock()
+    c = TTLCache(10, 5, clock)
+    c.set("a", 1)
+    clock.now += 4
+    c.set("a", 2)
+    clock.now += 4
+    eq(2, c.get("a"))
+
+
+@test("LRU: bỏ phần tử lâu chưa dùng")
+def _():
+    c = TTLCache(2, 60, FakeClock())
+    c.set("a", 1)
+    c.set("b", 2)
+    c.get("a")
+    c.set("c", 3)
+    eq(None, c.get("b"))
+    eq(1, c.get("a"))
+    eq(3, c.get("c"))
+
+
+@test("__len__ không đếm entry hết hạn")
+def _():
+    clock = FakeClock()
+    c = TTLCache(10, 5, clock)
+    c.set("a", 1)
+    clock.now += 2
+    c.set("b", 2)
+    clock.now += 4
+    eq(1, len(c))
+
+
+@test("get_or_load chống stampede: 20 thread chỉ gọi loader 1 lần")
+def _():
+    c = TTLCache(100, 60)
+    calls = []
+
+    def loader():
+        calls.append(1)
+        time.sleep(0.2)  # truy vấn DB chậm
+        return "profile"
+
+    barrier = threading.Barrier(20)
+    results = []
+
+    def run():
+        barrier.wait()
+        results.append(c.get_or_load("user:1", loader))
+
+    threads = [threading.Thread(target=run) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    eq(["profile"] * 20, results)
+    eq(1, len(calls), "loader bị gọi nhiều lần (stampede)")
+
+
+@test("get_or_load: key khác nhau không chặn nhau")
+def _():
+    c = TTLCache(100, 60)
+
+    def slow(v):
+        def loader():
+            time.sleep(0.2)
+            return v
+        return loader
+
+    start = time.perf_counter()
+    threads = [threading.Thread(target=c.get_or_load, args=(k, slow(k))) for k in "abcd"]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    ok(time.perf_counter() - start < 0.6, "4 key khác nhau phải nạp song song")
+%%% solution
+import threading
+import time
+from collections import OrderedDict
+
+MISSING = object()
+
+
+class TTLCache:
+    def __init__(self, maxsize: int, ttl: float, clock=time.monotonic):
+        self.maxsize, self.ttl, self.clock = maxsize, ttl, clock
+        self._data: OrderedDict = OrderedDict()   # key -> (value, expires_at)
+        self._lock = threading.Lock()
+        self._key_locks: dict = {}
+
+    def get(self, key, default=None):
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return default
+            value, expires_at = entry
+            if self.clock() >= expires_at:
+                del self._data[key]
+                return default
+            self._data.move_to_end(key)
+            return value
+
+    def set(self, key, value) -> None:
+        with self._lock:
+            self._data[key] = (value, self.clock() + self.ttl)
+            self._data.move_to_end(key)
+            while len(self._data) > self.maxsize:
+                self._data.popitem(last=False)
+
+    def delete(self, key) -> None:
+        with self._lock:
+            self._data.pop(key, None)
+
+    def _key_lock(self, key) -> threading.Lock:
+        with self._lock:
+            return self._key_locks.setdefault(key, threading.Lock())
+
+    def get_or_load(self, key, loader):
+        value = self.get(key, MISSING)
+        if value is not MISSING:
+            return value
+        with self._key_lock(key):
+            value = self.get(key, MISSING)   # double-checked
+            if value is MISSING:
+                value = loader()
+                self.set(key, value)
+            return value
+
+    def __len__(self) -> int:
+        with self._lock:
+            now = self.clock()
+            return sum(1 for _, exp in self._data.values() if now < exp)

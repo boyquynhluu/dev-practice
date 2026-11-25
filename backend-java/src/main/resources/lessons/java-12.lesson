@@ -1,0 +1,224 @@
+%%% meta
+id: java-12
+title: Thread-safety — race condition, Atomic, lock, deadlock
+level: advanced
+topic: Concurrency
+order: 12
+%%% theory
+## Race condition
+
+`count++` trông như một lệnh, thực ra là **3 bước**: đọc, cộng, ghi. Hai thread có thể cùng đọc ra giá trị 5, cùng ghi 6, và thế là mất một lần tăng.
+
+Trong Spring, controller và service là **singleton**, dùng chung cho mọi request. Field có thể thay đổi đặt trong một bean chính là chỗ race condition hay xảy ra nhất.
+
+## Công cụ
+
+| Cách | Khi nào |
+|---|---|
+| Không chia sẻ trạng thái / bất biến | Tốt nhất, nên ưu tiên |
+| `AtomicLong`, `LongAdder` | Bộ đếm đơn giản |
+| `ConcurrentHashMap.merge/compute` | Map dùng chung giữa nhiều thread. Thao tác compound phải **atomic**, không viết get rồi put |
+| `synchronized` / `ReentrantLock` | Bất biến của dữ liệu liên quan **nhiều field** |
+
+```java
+map.merge(path, 1L, Long::sum);     // atomic
+// ❌ map.put(path, map.getOrDefault(path, 0L) + 1);  // đọc và ghi tách rời -> race
+```
+
+## Deadlock
+
+Thread A khoá X rồi chờ Y, trong khi thread B khoá Y rồi chờ X. Hai thread chờ nhau mãi mãi.
+
+**Cách chữa kinh điển: luôn khoá theo một thứ tự toàn cục**, chẳng hạn theo id tăng dần:
+
+```java
+Account first = a.id() < b.id() ? a : b;
+Account second = first == a ? b : a;
+synchronized (first) { synchronized (second) { ... } }
+```
+
+## Trả về bản sao (snapshot)
+
+Đừng trả thẳng map nội bộ ra ngoài. Bên ngoài có thể sửa nó, hoặc duyệt nó trong lúc thread khác đang ghi. Hãy trả `Map.copyOf(...)`.
+
+> Bài này có **code sẵn bị lỗi**. Nhiệm vụ của bạn là tìm ra rồi sửa cho an toàn.
+%%% quiz
+? `count++` trên field dùng chung giữa nhiều thread…
+- là atomic
+* không atomic, có thể mất lần tăng
+- chỉ lỗi khi dùng long
+? Cách phòng deadlock khi phải khoá 2 tài khoản?
+- Dùng Thread.sleep
+* Khoá theo thứ tự cố định (ví dụ id tăng dần)
+- Khoá tài khoản nhận trước
+%%% hints
+- SafeCounter: đổi sang `AtomicLong` hoặc `LongAdder`.
+- HitCounter: `ConcurrentHashMap` + `merge`; `snapshot()` trả `Map.copyOf(...)`.
+- Account: `deposit`/`withdraw` là `synchronized`; `transfer` khoá theo id tăng dần.
+%%% starter
+import java.util.*;
+
+class SafeCounter {
+    private long count; // TODO: không an toàn
+
+    void inc() { count++; }
+
+    long get() { return count; }
+}
+
+class HitCounter {
+    private final Map<String, Long> hits = new HashMap<>(); // TODO
+
+    void hit(String path) {
+        hits.put(path, hits.getOrDefault(path, 0L) + 1);
+    }
+
+    /** Bản sao không sửa được. */
+    Map<String, Long> snapshot() { return hits; }
+}
+
+class Account {
+    private final long id;
+    private long balance;
+
+    Account(long id, long balance) {
+        this.id = id;
+        this.balance = balance;
+    }
+
+    long id() { return id; }
+
+    long balance() { return balance; }
+
+    void deposit(long amount) { balance += amount; }
+
+    void withdraw(long amount) {
+        if (balance < amount) throw new IllegalStateException("Không đủ tiền");
+        balance -= amount;
+    }
+
+    /** TODO: có thể deadlock khi 2 thread chuyển ngược chiều nhau. */
+    static void transfer(Account from, Account to, long amount) {
+        synchronized (from) {
+            synchronized (to) {
+                from.withdraw(amount);
+                to.deposit(amount);
+            }
+        }
+    }
+}
+%%% tests
+import java.util.*;
+import java.util.concurrent.*;
+
+class Tests {
+    static void parallel(int threads, Runnable body) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> fs = new ArrayList<>();
+        for (int i = 0; i < threads; i++) fs.add(pool.submit(() -> {
+            start.await();
+            body.run();
+            return null;
+        }));
+        start.countDown();
+        for (Future<?> f : fs) f.get();
+        pool.shutdown();
+    }
+
+    static void run(T t) {
+        t.test("SafeCounter: 8 thread x 50.000 lần", () -> {
+            SafeCounter c = new SafeCounter();
+            parallel(8, () -> { for (int i = 0; i < 50_000; i++) c.inc(); });
+            T.eq(400_000L, c.get());
+        });
+        t.test("HitCounter đếm đúng khi chạy song song", () -> {
+            HitCounter h = new HitCounter();
+            parallel(8, () -> { for (int i = 0; i < 20_000; i++) h.hit(i % 2 == 0 ? "/a" : "/b"); });
+            T.eq(80_000L, h.snapshot().get("/a"));
+            T.eq(80_000L, h.snapshot().get("/b"));
+        });
+        t.test("HitCounter.snapshot là bản sao bất biến", () -> {
+            HitCounter h = new HitCounter();
+            h.hit("/x");
+            Map<String, Long> s = h.snapshot();
+            h.hit("/x");
+            T.eq(1L, s.get("/x"));
+            T.throwsEx(UnsupportedOperationException.class, () -> s.put("/y", 1L));
+        });
+        t.test("deposit song song không mất tiền", () -> {
+            Account a = new Account(1, 0);
+            parallel(8, () -> { for (int i = 0; i < 20_000; i++) a.deposit(1); });
+            T.eq(160_000L, a.balance());
+        });
+        t.test("transfer ngược chiều không deadlock, tổng tiền bảo toàn", () -> {
+            Account a = new Account(1, 1_000_000), b = new Account(2, 1_000_000);
+            Thread t1 = new Thread(() -> { for (int i = 0; i < 100_000; i++) Account.transfer(a, b, 1); });
+            Thread t2 = new Thread(() -> { for (int i = 0; i < 100_000; i++) Account.transfer(b, a, 1); });
+            t1.setDaemon(true);
+            t2.setDaemon(true);
+            t1.start();
+            t2.start();
+            t1.join(4000);
+            t2.join(1000);
+            T.ok(!t1.isAlive() && !t2.isAlive(), "Có vẻ bị DEADLOCK: 2 thread vẫn đang chờ nhau");
+            T.eq(2_000_000L, a.balance() + b.balance());
+        });
+        t.test("withdraw quá số dư -> IllegalStateException", () ->
+                T.throwsEx(IllegalStateException.class, () -> new Account(1, 5).withdraw(6)));
+    }
+}
+%%% solution
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAdder;
+
+class SafeCounter {
+    private final LongAdder count = new LongAdder();
+
+    void inc() { count.increment(); }
+
+    long get() { return count.sum(); }
+}
+
+class HitCounter {
+    private final ConcurrentHashMap<String, Long> hits = new ConcurrentHashMap<>();
+
+    void hit(String path) {
+        hits.merge(path, 1L, Long::sum);
+    }
+
+    Map<String, Long> snapshot() { return Map.copyOf(hits); }
+}
+
+class Account {
+    private final long id;
+    private long balance;
+
+    Account(long id, long balance) {
+        this.id = id;
+        this.balance = balance;
+    }
+
+    long id() { return id; }
+
+    synchronized long balance() { return balance; }
+
+    synchronized void deposit(long amount) { balance += amount; }
+
+    synchronized void withdraw(long amount) {
+        if (balance < amount) throw new IllegalStateException("Không đủ tiền");
+        balance -= amount;
+    }
+
+    static void transfer(Account from, Account to, long amount) {
+        Account first = from.id < to.id ? from : to;
+        Account second = first == from ? to : from;
+        synchronized (first) {
+            synchronized (second) {
+                from.withdraw(amount);
+                to.deposit(amount);
+            }
+        }
+    }
+}

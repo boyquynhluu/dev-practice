@@ -1,0 +1,243 @@
+%%% meta
+id: java-08
+title: Record, enum, sealed và switch pattern — máy trạng thái đơn hàng
+level: intermediate
+topic: Java hiện đại
+order: 8
+%%% theory
+## record (Java 16+)
+
+```java
+record OrderLine(String sku, int qty) {
+    OrderLine {                       // compact constructor để validate
+        if (qty <= 0) throw new IllegalArgumentException("qty > 0");
+    }
+}
+```
+
+Compiler tự sinh constructor, các accessor `sku()`/`qty()`, `equals`, `hashCode` và `toString`. Record rất hợp để làm **DTO** hoặc **value object**.
+
+## enum có hành vi
+
+Enum không chỉ là hằng số. Nó có thể có field, method, và mỗi hằng có thể override method riêng. Bài toán trạng thái đơn hàng là ví dụ kinh điển:
+
+```
+NEW ──pay──▶ PAID ──ship──▶ SHIPPED ──deliver──▶ DELIVERED
+ │            │
+ └─cancel─▶ CANCELLED ◀─cancel (chỉ khi chưa ship)
+```
+
+Khi code chặn chuyển trạng thái sai (ví dụ `DELIVERED → PAID`), bug dữ liệu bị chặn ngay ở tầng domain, chứ không lọt xuống DB.
+
+## sealed + switch pattern (Java 21)
+
+```java
+sealed interface Event permits Pay, Ship, Cancel {}
+record Pay(long amount) implements Event {}
+record Ship(String tracking) implements Event {}
+record Cancel(String reason) implements Event {}
+
+String describe(Event e) {
+    return switch (e) {                 // compiler biết đã đủ mọi trường hợp
+        case Pay p when p.amount() > 1_000_000 -> "Thanh toán lớn";
+        case Pay p    -> "Thanh toán " + p.amount();
+        case Ship s   -> "Giao " + s.tracking();
+        case Cancel c -> "Huỷ: " + c.reason();
+    };
+}
+```
+
+Khi thêm một loại `Event` mới, **mọi switch chưa xử lý nó sẽ báo lỗi compile**. An toàn hơn hẳn chuỗi `if/instanceof`.
+%%% quiz
+? Ưu điểm chính của `sealed interface` khi đi cùng `switch` là gì?
+- Chạy nhanh hơn
+* Compiler kiểm tra switch đã xử lý đủ mọi kiểu con
+- Cho phép đa kế thừa
+? Record **không** tự sinh thứ gì?
+- equals/hashCode
+- accessor
+* setter
+%%% hints
+- `Status.canMoveTo(next)`: dùng `switch (this)` trả về true/false theo sơ đồ.
+- `apply`: dùng `switch (event)` với pattern `case Pay p -> ...`, ứng với mỗi event là một trạng thái đích; nếu `!canMoveTo` thì ném `IllegalStateException`.
+- Order là record bất biến: `apply` trả về `new Order(id, newStatus, ...)`.
+%%% starter
+import java.util.List;
+
+enum Status {
+    NEW, PAID, SHIPPED, DELIVERED, CANCELLED;
+
+    boolean canMoveTo(Status next) {
+        return false; // TODO theo sơ đồ
+    }
+
+    boolean isFinal() {
+        return false; // TODO: DELIVERED và CANCELLED là trạng thái cuối
+    }
+}
+
+sealed interface Event permits Pay, Ship, Deliver, Cancel {
+}
+
+record Pay(long amount) implements Event {
+}
+
+record Ship(String tracking) implements Event {
+}
+
+record Deliver() implements Event {
+}
+
+record Cancel(String reason) implements Event {
+}
+
+record Order(String id, Status status, long paid, String tracking) {
+    Order {
+        // TODO: id không được blank, paid >= 0
+    }
+
+    static Order create(String id) { return new Order(id, Status.NEW, 0, null); }
+
+    /** Áp event, trả Order mới. Chuyển sai -> IllegalStateException. Pay amount <= 0 -> IllegalArgumentException. */
+    Order apply(Event event) {
+        return this; // TODO
+    }
+}
+
+class Solution {
+    /** Áp lần lượt các event. */
+    static Order replay(Order start, List<Event> events) {
+        return start; // TODO
+    }
+
+    static String describe(Event e) {
+        return ""; // TODO: "Pay 500", "Ship VN123", "Deliver", "Cancel: hết hàng"
+    }
+}
+%%% tests
+import java.util.List;
+
+class Tests {
+    static void run(T t) {
+        t.test("canMoveTo theo sơ đồ", () -> {
+            T.ok(Status.NEW.canMoveTo(Status.PAID), "NEW -> PAID");
+            T.ok(Status.NEW.canMoveTo(Status.CANCELLED), "NEW -> CANCELLED");
+            T.ok(Status.PAID.canMoveTo(Status.SHIPPED), "PAID -> SHIPPED");
+            T.ok(Status.PAID.canMoveTo(Status.CANCELLED), "PAID -> CANCELLED");
+            T.ok(Status.SHIPPED.canMoveTo(Status.DELIVERED), "SHIPPED -> DELIVERED");
+            T.ok(!Status.SHIPPED.canMoveTo(Status.CANCELLED), "SHIPPED không được huỷ");
+            T.ok(!Status.DELIVERED.canMoveTo(Status.PAID), "DELIVERED -> PAID là sai");
+            T.ok(!Status.NEW.canMoveTo(Status.SHIPPED), "NEW không ship thẳng");
+        });
+        t.test("isFinal", () -> {
+            T.ok(Status.DELIVERED.isFinal() && Status.CANCELLED.isFinal(), "DELIVERED, CANCELLED là cuối");
+            T.ok(!Status.PAID.isFinal(), "PAID chưa phải cuối");
+        });
+        t.test("luồng chuẩn NEW -> DELIVERED", () -> {
+            Order o = Solution.replay(Order.create("o1"), List.of(new Pay(500), new Ship("VN123"), new Deliver()));
+            T.eq(Status.DELIVERED, o.status());
+            T.eq(500L, o.paid());
+            T.eq("VN123", o.tracking());
+        });
+        t.test("Order bất biến", () -> {
+            Order o = Order.create("o1");
+            o.apply(new Pay(100));
+            T.eq(Status.NEW, o.status());
+        });
+        t.test("ship khi chưa trả tiền -> IllegalStateException", () ->
+                T.throwsEx(IllegalStateException.class, () -> Order.create("o1").apply(new Ship("X"))));
+        t.test("huỷ sau khi ship -> IllegalStateException", () ->
+                T.throwsEx(IllegalStateException.class, () ->
+                        Solution.replay(Order.create("o1"), List.of(new Pay(1), new Ship("X"), new Cancel("đổi ý")))));
+        t.test("Pay <= 0 -> IllegalArgumentException", () ->
+                T.throwsEx(IllegalArgumentException.class, () -> Order.create("o1").apply(new Pay(0))));
+        t.test("compact constructor validate", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> Order.create(" "));
+            T.throwsEx(IllegalArgumentException.class, () -> new Order("x", Status.NEW, -1, null));
+        });
+        t.test("describe", () -> {
+            T.eq("Pay 500", Solution.describe(new Pay(500)));
+            T.eq("Ship VN123", Solution.describe(new Ship("VN123")));
+            T.eq("Deliver", Solution.describe(new Deliver()));
+            T.eq("Cancel: hết hàng", Solution.describe(new Cancel("hết hàng")));
+        });
+    }
+}
+%%% solution
+import java.util.List;
+
+enum Status {
+    NEW, PAID, SHIPPED, DELIVERED, CANCELLED;
+
+    boolean canMoveTo(Status next) {
+        return switch (this) {
+            case NEW -> next == PAID || next == CANCELLED;
+            case PAID -> next == SHIPPED || next == CANCELLED;
+            case SHIPPED -> next == DELIVERED;
+            case DELIVERED, CANCELLED -> false;
+        };
+    }
+
+    boolean isFinal() {
+        return this == DELIVERED || this == CANCELLED;
+    }
+}
+
+sealed interface Event permits Pay, Ship, Deliver, Cancel {
+}
+
+record Pay(long amount) implements Event {
+}
+
+record Ship(String tracking) implements Event {
+}
+
+record Deliver() implements Event {
+}
+
+record Cancel(String reason) implements Event {
+}
+
+record Order(String id, Status status, long paid, String tracking) {
+    Order {
+        if (id == null || id.isBlank()) throw new IllegalArgumentException("id bắt buộc");
+        if (paid < 0) throw new IllegalArgumentException("paid >= 0");
+    }
+
+    static Order create(String id) { return new Order(id, Status.NEW, 0, null); }
+
+    Order apply(Event event) {
+        Status target = switch (event) {
+            case Pay p -> {
+                if (p.amount() <= 0) throw new IllegalArgumentException("amount > 0");
+                yield Status.PAID;
+            }
+            case Ship s -> Status.SHIPPED;
+            case Deliver d -> Status.DELIVERED;
+            case Cancel c -> Status.CANCELLED;
+        };
+        if (!status.canMoveTo(target)) throw new IllegalStateException(status + " -> " + target + " không hợp lệ");
+        return switch (event) {
+            case Pay p -> new Order(id, target, paid + p.amount(), tracking);
+            case Ship s -> new Order(id, target, paid, s.tracking());
+            default -> new Order(id, target, paid, tracking);
+        };
+    }
+}
+
+class Solution {
+    static Order replay(Order start, List<Event> events) {
+        Order o = start;
+        for (Event e : events) o = o.apply(e);
+        return o;
+    }
+
+    static String describe(Event e) {
+        return switch (e) {
+            case Pay p -> "Pay " + p.amount();
+            case Ship s -> "Ship " + s.tracking();
+            case Deliver d -> "Deliver";
+            case Cancel c -> "Cancel: " + c.reason();
+        };
+    }
+}

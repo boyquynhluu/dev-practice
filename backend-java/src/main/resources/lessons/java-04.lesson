@@ -1,0 +1,144 @@
+%%% meta
+id: java-04
+title: Collections — List, Set, Map
+level: core
+topic: Collections
+order: 4
+%%% theory
+## Chọn đúng cấu trúc
+
+| Cần | Dùng | Độ phức tạp |
+|---|---|---|
+| Danh sách có thứ tự, truy cập theo index | `ArrayList` | get O(1), add cuối O(1)* |
+| Không trùng lặp, chỉ cần "có hay không" | `HashSet` | contains O(1) |
+| Không trùng **và** giữ thứ tự thêm vào | `LinkedHashSet` | O(1) |
+| Tra cứu theo key | `HashMap` | get/put O(1) |
+| Key được **sắp xếp** | `TreeMap` | O(log n) |
+| Hàng đợi / stack | `ArrayDeque` | O(1) hai đầu |
+
+`HashMap` **không đảm bảo thứ tự**. Test nào dựa vào thứ tự duyệt của HashMap thì có ngày sẽ "lúc đúng lúc sai".
+
+## Các API nên thuộc
+
+```java
+map.merge(word, 1, Integer::sum);                    // đếm tần suất
+map.computeIfAbsent(key, k -> new ArrayList<>()).add(v); // gom nhóm
+map.getOrDefault(key, 0);
+list.sort(Comparator.comparing(Item::price).reversed().thenComparing(Item::name));
+```
+
+## Bẫy thường gặp
+
+- `List.of(...)`, `Map.of(...)` là **bất biến**: gọi `add` sẽ ném `UnsupportedOperationException`.
+- Xoá phần tử trong vòng `for-each` sẽ ném `ConcurrentModificationException`. Dùng `list.removeIf(...)` hoặc `Iterator.remove()`.
+- `Arrays.asList` có kích thước cố định.
+- Trả collection ra ngoài class thì cân nhắc `List.copyOf(...)`, để bên ngoài không sửa được trạng thái bên trong.
+
+## Regex tách từ cho tiếng Việt
+
+`\w` chỉ khớp ASCII, nên chữ "đường" sẽ bị cắt. Dùng `\p{L}` (mọi chữ cái Unicode) và `\p{N}` (chữ số): `text.split("[^\\p{L}\\p{N}]+")`.
+%%% quiz
+? Cần loại trùng nhưng vẫn giữ thứ tự xuất hiện. Chọn gì?
+- HashSet
+- TreeSet
+* LinkedHashSet
+? `List.of(1,2).add(3)` sẽ…
+- trả về [1,2,3]
+* ném UnsupportedOperationException
+- lỗi biên dịch
+%%% hints
+- wordFreq: `toLowerCase()`, `split("[^\\p{L}\\p{N}]+")`, bỏ chuỗi rỗng, rồi `merge(w, 1, Integer::sum)`.
+- topK: lấy `entrySet()` của wordFreq, sort theo value giảm dần, rồi `thenComparing` key tăng dần, sau đó `limit(k)`.
+- groupByDomain: `TreeMap` + `computeIfAbsent`.
+%%% starter
+import java.util.*;
+
+class Solution {
+    /** Đếm tần suất từ, không phân biệt hoa thường, bỏ dấu câu. */
+    static Map<String, Integer> wordFreq(String text) {
+        return new HashMap<>(); // TODO
+    }
+
+    /** k từ xuất hiện nhiều nhất; hoà thì theo thứ tự chữ cái. */
+    static List<String> topK(String text, int k) {
+        return new ArrayList<>(); // TODO
+    }
+
+    /** Bỏ phần tử trùng, giữ thứ tự xuất hiện đầu tiên. */
+    static List<Integer> dedupeKeepOrder(List<Integer> items) {
+        return items; // TODO
+    }
+
+    /** Gom email theo domain (viết thường), domain sắp xếp tăng dần; bỏ qua chuỗi không có '@'. */
+    static Map<String, List<String>> groupByDomain(List<String> emails) {
+        return new TreeMap<>(); // TODO
+    }
+}
+%%% tests
+import java.util.*;
+
+class Tests {
+    static void run(T t) {
+        t.test("wordFreq cơ bản", () -> {
+            Map<String, Integer> f = Solution.wordFreq("Hello, hello world!");
+            T.eq(2, f.get("hello"));
+            T.eq(1, f.get("world"));
+            T.eq(2, f.size());
+        });
+        t.test("wordFreq tiếng Việt có dấu", () -> {
+            Map<String, Integer> f = Solution.wordFreq("Đường xa, đường gần.");
+            T.eq(2, f.get("đường"));
+        });
+        t.test("wordFreq chuỗi rỗng", () -> T.eq(0, Solution.wordFreq("  ...  ").size()));
+        t.test("topK theo tần suất rồi chữ cái", () ->
+                T.eq(List.of("b", "a", "c"), Solution.topK("a b c b a b d c", 3)));
+        t.test("topK k lớn hơn số từ", () -> T.eq(List.of("x"), Solution.topK("x x", 5)));
+        t.test("dedupeKeepOrder", () -> T.eq(List.of(3, 1, 2), Solution.dedupeKeepOrder(List.of(3, 1, 3, 2, 1))));
+        t.test("dedupeKeepOrder không sửa list đầu vào", () -> {
+            List<Integer> in = new ArrayList<>(List.of(1, 1, 2));
+            Solution.dedupeKeepOrder(in);
+            T.eq(List.of(1, 1, 2), in);
+        });
+        t.test("groupByDomain", () -> {
+            Map<String, List<String>> g = Solution.groupByDomain(
+                    List.of("an@Gmail.com", "binh@corp.vn", "bad-email", "chi@gmail.com"));
+            T.eq(List.of("corp.vn", "gmail.com"), new ArrayList<>(g.keySet()));
+            T.eq(List.of("an@Gmail.com", "chi@gmail.com"), g.get("gmail.com"));
+        });
+    }
+}
+%%% solution
+import java.util.*;
+
+class Solution {
+    static Map<String, Integer> wordFreq(String text) {
+        Map<String, Integer> freq = new HashMap<>();
+        for (String w : text.toLowerCase().split("[^\\p{L}\\p{N}]+")) {
+            if (!w.isEmpty()) freq.merge(w, 1, Integer::sum);
+        }
+        return freq;
+    }
+
+    static List<String> topK(String text, int k) {
+        return wordFreq(text).entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(k)
+                .map(Map.Entry::getKey)
+                .toList();
+    }
+
+    static List<Integer> dedupeKeepOrder(List<Integer> items) {
+        return new ArrayList<>(new LinkedHashSet<>(items));
+    }
+
+    static Map<String, List<String>> groupByDomain(List<String> emails) {
+        Map<String, List<String>> out = new TreeMap<>();
+        for (String e : emails) {
+            int at = e.indexOf('@');
+            if (at < 0) continue;
+            out.computeIfAbsent(e.substring(at + 1).toLowerCase(), d -> new ArrayList<>()).add(e);
+        }
+        return out;
+    }
+}

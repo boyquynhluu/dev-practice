@@ -1,0 +1,179 @@
+%%% meta
+id: fe-10
+title: useState và form có validate
+level: intermediate
+topic: React
+order: 10
+%%% theory
+## useState
+
+```jsx
+const [count, setCount] = useState(0);
+setCount(count + 1);          // dùng giá trị của lần render hiện tại
+setCount((c) => c + 1);       // dạng hàm: an toàn khi cập nhật nhiều lần liên tiếp
+```
+
+- Gọi `setX` thì React **render lại** component với giá trị mới. Ngay sau lệnh `setX`, biến `x` **vẫn còn là giá trị cũ**.
+- State là object thì phải tạo object mới: `setForm({ ...form, email: v })`.
+
+## Controlled input
+
+```jsx
+<input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+```
+
+React giữ "nguồn sự thật" cho input, nên muốn validate, định dạng hay reset đều dễ.
+
+## Validate form: hiện lỗi đúng lúc
+
+- Có một hàm `validate(values)` **thuần** (không side effect), trả về `{ field: message }`. Hàm như vậy test được riêng.
+- Chỉ hiện lỗi của field **đã được chạm vào** (`touched`) hoặc sau khi người dùng bấm submit, đừng hiện lỗi đỏ ngay khi vừa mở form.
+- Khi submit: `e.preventDefault()`, validate tất cả, có lỗi thì dừng, hợp lệ thì gọi `onSubmit(values)`.
+- Trong lúc đang gửi thì `disabled` nút bấm, để tránh người dùng bấm hai lần.
+
+## State tối thiểu
+
+Đừng lưu những gì **tính ra được**. `errors` được tính từ `values`, `isValid` được tính từ `errors`. Chỉ cần lưu `values`, `touched` và `submitting`.
+%%% quiz
+? Sau `setCount(count + 1)`, ngay dòng tiếp theo `count` có giá trị nào?
+* Vẫn là giá trị cũ
+- Giá trị mới
+? Có nên lưu `errors` vào state riêng không?
+- Bắt buộc phải lưu
+* Không cần, vì tính được từ values mỗi lần render
+%%% hints
+- validate: email dùng `/^[^@\s]+@[^@\s]+\.[^@\s]+$/`; password cần ít nhất 8 ký tự; confirm phải bằng password.
+- SignupForm: state `values`, `touched` (object) và `submitted` (bool). Lỗi của một field chỉ hiện khi `touched[f] || submitted`.
+- Input: `onBlur={() => setTouched({ ...touched, [name]: true })}`.
+- Submit: `setSubmitted(true)`; nếu `Object.keys(errors).length === 0` thì gọi `onSubmit({ email, password })`. Không gửi kèm confirm.
+%%% starter
+/** Trả { email?, password?, confirm? } — chuỗi lỗi tiếng Việt */
+function validate(values) {
+  return {}; // TODO
+}
+
+/**
+ * Form 3 ô: input name="email", name="password" (type password), name="confirm"
+ * Lỗi hiện trong <p className="error" data-field="email">...</p> — chỉ khi field đã blur hoặc đã bấm submit.
+ * Nút <button type="submit">Đăng ký</button>. Hợp lệ -> onSubmit({ email, password }).
+ */
+function SignupForm({ onSubmit }) {
+  const [email, setEmail] = useState('');
+  return (
+    <form>
+      <input name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+      <button type="submit">Đăng ký</button>
+    </form>
+  ); // TODO
+}
+
+function App() {
+  return <SignupForm onSubmit={(v) => console.log('submit', v)} />;
+}
+%%% tests
+const errOf = (box, f) => box.querySelector(`.error[data-field="${f}"]`)?.textContent ?? null;
+const field = (box, n) => box.querySelector(`input[name="${n}"]`);
+
+async function blur(el) {
+  el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  await flush();
+}
+
+test('validate: hàm thuần', () => {
+  expect(validate({ email: 'a@b.vn', password: '12345678', confirm: '12345678' })).toEqual({});
+  const e = validate({ email: 'sai', password: '123', confirm: 'x' });
+  expect(Object.keys(e).sort()).toEqual(['confirm', 'email', 'password']);
+});
+
+test('chưa chạm vào thì không hiện lỗi', async () => {
+  const { container } = await render(<SignupForm onSubmit={() => {}} />);
+  expect(container.querySelectorAll('.error')).toHaveLength(0);
+});
+
+test('blur ô email sai thì hiện lỗi email (chỉ email)', async () => {
+  const { container } = await render(<SignupForm onSubmit={() => {}} />);
+  await type(field(container, 'email'), 'abc');
+  await blur(field(container, 'email'));
+  expect(errOf(container, 'email')).toBeTruthy();
+  expect(errOf(container, 'password')).toBeNull();
+});
+
+test('submit form trống: hiện đủ lỗi, không gọi onSubmit', async () => {
+  const onSubmit = fn();
+  const { container } = await render(<SignupForm onSubmit={onSubmit} />);
+  await submit(container.querySelector('form'));
+  expect(container.querySelectorAll('.error')).toHaveLength(3);
+  expect(onSubmit.calls.length).toBe(0);
+});
+
+test('confirm khác password', async () => {
+  const { container } = await render(<SignupForm onSubmit={() => {}} />);
+  await type(field(container, 'password'), 'abcd1234');
+  await type(field(container, 'confirm'), 'abcd12345');
+  await blur(field(container, 'confirm'));
+  expect(errOf(container, 'confirm')).toBeTruthy();
+});
+
+test('hợp lệ: gọi onSubmit({ email, password }) không kèm confirm', async () => {
+  const onSubmit = fn();
+  const { container } = await render(<SignupForm onSubmit={onSubmit} />);
+  await type(field(container, 'email'), 'an@x.vn');
+  await type(field(container, 'password'), 'abcd1234');
+  await type(field(container, 'confirm'), 'abcd1234');
+  await submit(container.querySelector('form'));
+  expect(onSubmit.calls).toEqual([[{ email: 'an@x.vn', password: 'abcd1234' }]]);
+  expect(container.querySelectorAll('.error')).toHaveLength(0);
+});
+
+test('lỗi biến mất khi sửa đúng', async () => {
+  const { container } = await render(<SignupForm onSubmit={() => {}} />);
+  await submit(container.querySelector('form'));
+  await type(field(container, 'email'), 'an@x.vn');
+  expect(errOf(container, 'email')).toBeNull();
+});
+%%% solution
+function validate(values) {
+  const errors = {};
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(values.email ?? '')) errors.email = 'Email không hợp lệ';
+  if ((values.password ?? '').length < 8) errors.password = 'Mật khẩu tối thiểu 8 ký tự';
+  if (values.confirm !== values.password || !values.confirm) errors.confirm = 'Mật khẩu nhập lại không khớp';
+  return errors;
+}
+
+function SignupForm({ onSubmit }) {
+  const [values, setValues] = useState({ email: '', password: '', confirm: '' });
+  const [touched, setTouched] = useState({});
+  const [submitted, setSubmitted] = useState(false);
+  const errors = validate(values);
+  const show = (f) => (touched[f] || submitted) && errors[f];
+
+  const bind = (name, type = 'text') => ({
+    name,
+    type,
+    value: values[name],
+    onChange: (e) => setValues({ ...values, [name]: e.target.value }),
+    onBlur: () => setTouched({ ...touched, [name]: true }),
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setSubmitted(true);
+    if (Object.keys(errors).length === 0) onSubmit({ email: values.email, password: values.password });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} noValidate>
+      <label>Email <input {...bind('email', 'email')} /></label>
+      {show('email') && <p className="error" data-field="email">{errors.email}</p>}
+      <label>Mật khẩu <input {...bind('password', 'password')} /></label>
+      {show('password') && <p className="error" data-field="password">{errors.password}</p>}
+      <label>Nhập lại <input {...bind('confirm', 'password')} /></label>
+      {show('confirm') && <p className="error" data-field="confirm">{errors.confirm}</p>}
+      <button type="submit">Đăng ký</button>
+    </form>
+  );
+}
+
+function App() {
+  return <SignupForm onSubmit={(v) => console.log('submit', v)} />;
+}

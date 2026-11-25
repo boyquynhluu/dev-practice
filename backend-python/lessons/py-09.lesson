@@ -1,0 +1,207 @@
+%%% meta
+id: py-09
+title: SQL với sqlite3 — JOIN, GROUP BY, phân trang, transaction
+level: intermediate
+topic: Database
+order: 9
+%%% theory
+## DB-API trong Python
+
+```python
+import sqlite3
+conn = sqlite3.connect(":memory:")
+conn.row_factory = sqlite3.Row             # đọc cột theo tên: row["name"]
+rows = conn.execute("SELECT * FROM customers WHERE city = ?", (city,)).fetchall()
+```
+
+**Luôn truyền tham số qua `?`** (hoặc `%s` với psycopg). Nối chuỗi SQL bằng f-string sẽ dính SQL injection.
+
+## JOIN
+
+```sql
+-- INNER JOIN: chỉ khách CÓ đơn
+SELECT c.name, o.amount FROM customers c JOIN orders o ON o.customer_id = c.id;
+
+-- LEFT JOIN: mọi khách, khách không có đơn thì o.* là NULL
+SELECT c.name, COALESCE(SUM(o.amount), 0) AS total
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.id AND o.status = 'PAID'   -- lọc ở ON để vẫn giữ khách
+GROUP BY c.id, c.name
+ORDER BY total DESC, c.name;
+```
+
+Đặt điều kiện `o.status = 'PAID'` ở **WHERE** sẽ biến LEFT JOIN thành INNER JOIN, khách không có đơn sẽ biến mất. Đây là lỗi rất hay gặp.
+
+## Phân trang
+
+```sql
+SELECT ... ORDER BY id LIMIT :size OFFSET (:page - 1) * :size;
+SELECT COUNT(*) FROM orders;                -- tổng số bản ghi để tính số trang
+```
+
+Phải luôn có `ORDER BY`, nếu không thứ tự giữa các trang không được đảm bảo. Bảng rất lớn thì nên dùng **keyset pagination** (`WHERE id > :last_id`) thay cho OFFSET.
+
+## Transaction
+
+```python
+with conn:                    # thành công thì commit, exception thì rollback
+    conn.execute("INSERT ...")
+```
+
+## Index
+
+Cột hay nằm trong `WHERE`/`JOIN`/`ORDER BY` thì nên có index. Ví dụ: `CREATE INDEX idx_orders_customer ON orders(customer_id)`. Dùng `EXPLAIN QUERY PLAN` để kiểm tra query có dùng index không.
+%%% quiz
+? LEFT JOIN rồi đặt `WHERE o.status = 'PAID'` thì sao?
+* Khách không có đơn PAID bị loại, chẳng khác gì INNER JOIN
+- Không ảnh hưởng gì
+- Lỗi cú pháp
+? Phân trang bằng LIMIT/OFFSET bắt buộc phải có gì?
+- GROUP BY
+* ORDER BY
+- HAVING
+%%% hints
+- revenue_by_customer: LEFT JOIN, đặt điều kiện status ở ON, dùng `COALESCE(SUM(...), 0)`.
+- customers_without_orders: `LEFT JOIN orders o ... WHERE o.id IS NULL`.
+- add_order: `with conn:`; kiểm tra khách bằng `SELECT 1 FROM customers WHERE id = ?`; lấy id vừa thêm bằng `cur.lastrowid`.
+- paginate: `pages = (total + size - 1) // size`.
+%%% starter
+import sqlite3
+
+# Schema (đã tạo sẵn trong test):
+#   customers(id INTEGER PK, name TEXT, city TEXT)
+#   orders(id INTEGER PK, customer_id INTEGER, amount INTEGER, status TEXT)
+
+
+def customers_in_city(conn: sqlite3.Connection, city: str) -> list[str]:
+    """Tên khách ở city, sắp xếp A-Z. An toàn với SQL injection."""
+    sql = f"SELECT name FROM customers WHERE city = '{city}'"  # TODO: lỗ hổng!
+    return [r[0] for r in conn.execute(sql)]
+
+
+def revenue_by_customer(conn) -> list[tuple[str, int]]:
+    """MỌI khách + tổng tiền đơn PAID (0 nếu không có), sắp total giảm dần rồi tên."""
+    return []  # TODO
+
+
+def customers_without_orders(conn) -> list[str]:
+    """Khách chưa có đơn nào (bất kể status), sắp A-Z."""
+    return []  # TODO
+
+
+def add_order(conn, customer_id: int, amount: int) -> int:
+    """Thêm đơn PENDING trong transaction, trả id. amount <= 0 -> ValueError; không có khách -> LookupError."""
+    return 0  # TODO
+
+
+def paginate_orders(conn, page: int, size: int) -> dict:
+    """{"items": [id...], "total": tổng số đơn, "pages": số trang}; sắp theo id."""
+    return {"items": [], "total": 0, "pages": 0}  # TODO
+%%% tests
+import sqlite3
+
+from checker import test, eq, ok, raises
+from solution import *
+
+
+def db():
+    c = sqlite3.connect(":memory:")
+    c.executescript("""
+        CREATE TABLE customers(id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT NOT NULL);
+        CREATE TABLE orders(id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id),
+                            amount INTEGER NOT NULL, status TEXT NOT NULL);
+        INSERT INTO customers VALUES (1,'An','HN'),(2,'Bình','HCM'),(3,'Chi','HN'),(4,'Dũng','DN');
+        INSERT INTO orders VALUES (1,1,100,'PAID'),(2,1,50,'CANCELLED'),(3,2,300,'PAID'),
+                                  (4,3,70,'PENDING'),(5,2,20,'PAID');
+    """)
+    return c
+
+
+@test("customers_in_city")
+def _():
+    eq(["An", "Chi"], customers_in_city(db(), "HN"))
+
+
+@test("customers_in_city chống SQL injection")
+def _():
+    eq([], customers_in_city(db(), "x' OR '1'='1"))
+
+
+@test("revenue_by_customer gồm cả khách 0đ")
+def _():
+    eq([("Bình", 320), ("An", 100), ("Chi", 0), ("Dũng", 0)], revenue_by_customer(db()))
+
+
+@test("customers_without_orders")
+def _():
+    eq(["Dũng"], customers_without_orders(db()))
+
+
+@test("add_order trả id và lưu PENDING")
+def _():
+    c = db()
+    new_id = add_order(c, 4, 999)
+    eq(6, new_id)
+    eq(("PENDING", 999), c.execute("SELECT status, amount FROM orders WHERE id = ?", (new_id,)).fetchone())
+    eq([], customers_without_orders(c))
+
+
+@test("add_order validate")
+def _():
+    c = db()
+    raises(ValueError, add_order, c, 1, 0)
+    raises(LookupError, add_order, c, 99, 10)
+    eq(5, c.execute("SELECT COUNT(*) FROM orders").fetchone()[0])
+
+
+@test("paginate_orders")
+def _():
+    c = db()
+    eq({"items": [1, 2], "total": 5, "pages": 3}, paginate_orders(c, 1, 2))
+    eq({"items": [5], "total": 5, "pages": 3}, paginate_orders(c, 3, 2))
+    eq({"items": [], "total": 5, "pages": 3}, paginate_orders(c, 4, 2))
+%%% solution
+import sqlite3
+
+
+def customers_in_city(conn: sqlite3.Connection, city: str) -> list[str]:
+    rows = conn.execute("SELECT name FROM customers WHERE city = ? ORDER BY name", (city,))
+    return [r[0] for r in rows]
+
+
+def revenue_by_customer(conn) -> list[tuple[str, int]]:
+    rows = conn.execute("""
+        SELECT c.name, COALESCE(SUM(o.amount), 0) AS total
+        FROM customers c
+        LEFT JOIN orders o ON o.customer_id = c.id AND o.status = 'PAID'
+        GROUP BY c.id, c.name
+        ORDER BY total DESC, c.name
+    """)
+    return [(r[0], r[1]) for r in rows]
+
+
+def customers_without_orders(conn) -> list[str]:
+    rows = conn.execute("""
+        SELECT c.name FROM customers c
+        LEFT JOIN orders o ON o.customer_id = c.id
+        WHERE o.id IS NULL
+        ORDER BY c.name
+    """)
+    return [r[0] for r in rows]
+
+
+def add_order(conn, customer_id: int, amount: int) -> int:
+    if amount <= 0:
+        raise ValueError("amount phải > 0")
+    with conn:
+        if conn.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone() is None:
+            raise LookupError(f"Không có khách {customer_id}")
+        cur = conn.execute("INSERT INTO orders(customer_id, amount, status) VALUES (?, ?, 'PENDING')",
+                           (customer_id, amount))
+        return cur.lastrowid
+
+
+def paginate_orders(conn, page: int, size: int) -> dict:
+    total = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    rows = conn.execute("SELECT id FROM orders ORDER BY id LIMIT ? OFFSET ?", (size, (page - 1) * size))
+    return {"items": [r[0] for r in rows], "total": total, "pages": (total + size - 1) // size}

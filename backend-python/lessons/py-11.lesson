@@ -1,0 +1,160 @@
+%%% meta
+id: py-11
+title: asyncio — gather, giới hạn đồng thời, timeout
+level: advanced
+topic: Bất đồng bộ
+order: 11
+%%% theory
+## Khi nào dùng async
+
+`async` hợp với việc **chờ I/O**: gọi HTTP, đọc ghi DB, gửi message. Trong lúc chờ một request, event loop chạy việc khác, nên một thread phục vụ được hàng nghìn kết nối. FastAPI, aiohttp và asyncpg đều theo mô hình này.
+
+Còn **tính toán CPU nặng** thì async không giúp gì: hãy dùng process pool.
+
+## Cú pháp cốt lõi
+
+```python
+import asyncio
+
+async def fetch(i):
+    await asyncio.sleep(0.1)          # nhường event loop
+    return i * 2
+
+async def main():
+    results = await asyncio.gather(*(fetch(i) for i in range(10)))   # chạy đồng thời
+    # khoảng 0.1s chứ không phải 1s
+
+asyncio.run(main())
+```
+
+- `gather(..., return_exceptions=True)`: lỗi được trả về như một kết quả, không làm hỏng cả nhóm.
+- `asyncio.wait_for(coro, timeout)`: quá giờ thì ném `TimeoutError` (Python 3.10 là `asyncio.TimeoutError`).
+- `asyncio.Semaphore(n)`: giới hạn tối đa n coroutine chạy cùng lúc, để không "dội" quá nhiều request vào một service hay vượt rate limit.
+
+```python
+sem = asyncio.Semaphore(5)
+async def limited(i):
+    async with sem:
+        return await fetch(i)
+```
+
+## Bẫy
+
+- Gọi `time.sleep()` hay `requests.get()` bên trong hàm async sẽ **chặn cả event loop**. Phải dùng `await asyncio.sleep()` và client async (httpx, aiohttp).
+- Quên `await` thì coroutine **không bao giờ chạy**.
+%%% quiz
+? Viết `time.sleep(1)` bên trong hàm `async def` thì sao?
+* Chặn toàn bộ event loop trong 1 giây
+- Chỉ chặn coroutine đó
+- Tự chuyển thành asyncio.sleep
+? Muốn chạy 100 request nhưng tối đa 5 request cùng lúc, dùng gì?
+- asyncio.Lock
+* asyncio.Semaphore(5)
+- Queue
+%%% hints
+- fetch_all: `return await asyncio.gather(*(fetch(u) for u in urls))`.
+- fetch_limited: tạo `sem = asyncio.Semaphore(limit)` **bên trong** hàm; mỗi task là `async with sem: return await fetch(u)`.
+- fetch_with_timeout: bọc từng việc bằng `asyncio.wait_for`, bắt `asyncio.TimeoutError` và `Exception`, trả `None` cho việc lỗi.
+%%% starter
+import asyncio
+
+
+async def fetch_all(fetch, urls: list[str]) -> list:
+    """Gọi fetch(url) cho mọi url ĐỒNG THỜI, giữ thứ tự kết quả."""
+    results = []
+    for u in urls:
+        results.append(await fetch(u))  # TODO: đang tuần tự!
+    return results
+
+
+async def fetch_limited(fetch, urls: list[str], limit: int) -> list:
+    """Như fetch_all nhưng tối đa `limit` lời gọi chạy cùng lúc."""
+    return []  # TODO
+
+
+async def fetch_with_timeout(fetch, urls: list[str], timeout: float) -> list:
+    """Việc nào lỗi hoặc quá timeout (giây) thì kết quả là None; các việc khác không bị ảnh hưởng."""
+    return []  # TODO
+%%% tests
+import asyncio
+import time
+
+from checker import test, eq, ok
+from solution import *
+
+
+def make_fetch(delay=0.1, slow=(), broken=()):
+    state = {"active": 0, "peak": 0}
+
+    async def fetch(url):
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        try:
+            await asyncio.sleep(2 if url in slow else delay)
+            if url in broken:
+                raise ConnectionError(url)
+            return url.upper()
+        finally:
+            state["active"] -= 1
+
+    return fetch, state
+
+
+@test("fetch_all chạy đồng thời và giữ thứ tự")
+async def _():
+    fetch, _ = make_fetch()
+    start = time.perf_counter()
+    eq(["A", "B", "C", "D", "E"], await fetch_all(fetch, list("abcde")))
+    elapsed = time.perf_counter() - start
+    ok(elapsed < 0.35, f"mất {elapsed:.2f}s, có vẻ vẫn chạy tuần tự (5 x 0.1s)")
+
+
+@test("fetch_limited không vượt quá limit")
+async def _():
+    fetch, state = make_fetch(delay=0.05)
+    result = await fetch_limited(fetch, [str(i) for i in range(12)], 3)
+    eq([str(i) for i in range(12)], result)
+    eq(3, state["peak"])
+
+
+@test("fetch_limited vẫn nhanh hơn tuần tự")
+async def _():
+    fetch, _ = make_fetch(delay=0.1)
+    start = time.perf_counter()
+    await fetch_limited(fetch, list("abcdef"), 3)
+    elapsed = time.perf_counter() - start
+    ok(elapsed < 0.45, f"mất {elapsed:.2f}s (mong đợi khoảng 0.2s)")
+
+
+@test("fetch_with_timeout: lỗi/chậm thành None, việc khác vẫn có kết quả")
+async def _():
+    fetch, _ = make_fetch(delay=0.05, slow={"s"}, broken={"x"})
+    start = time.perf_counter()
+    eq(["A", None, None, "B"], await fetch_with_timeout(fetch, ["a", "s", "x", "b"], 0.3))
+    ok(time.perf_counter() - start < 1.0, "phải dừng sau khoảng timeout, không chờ việc chậm")
+%%% solution
+import asyncio
+
+
+async def fetch_all(fetch, urls: list[str]) -> list:
+    return await asyncio.gather(*(fetch(u) for u in urls))
+
+
+async def fetch_limited(fetch, urls: list[str], limit: int) -> list:
+    sem = asyncio.Semaphore(limit)
+
+    async def one(u):
+        async with sem:
+            return await fetch(u)
+
+    return await asyncio.gather(*(one(u) for u in urls))
+
+
+async def fetch_with_timeout(fetch, urls: list[str], timeout: float) -> list:
+    async def one(u):
+        try:
+            return await asyncio.wait_for(fetch(u), timeout)
+        except (asyncio.TimeoutError, Exception):
+            return None
+
+    return await asyncio.gather(*(one(u) for u in urls))

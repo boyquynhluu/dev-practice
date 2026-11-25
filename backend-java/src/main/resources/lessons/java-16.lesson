@@ -1,0 +1,223 @@
+%%% meta
+id: java-16
+title: Java 21 — Virtual threads: gọi song song hàng trăm I/O
+level: advanced
+topic: Java 21
+order: 16
+%%% theory
+## Platform thread và virtual thread
+
+Mỗi **platform thread** (`new Thread`, thread trong `newFixedThreadPool`) ứng với một thread của hệ điều hành. Nó tốn khoảng 1 MB stack, và tạo hay chuyển đổi đều đắt. Server kiểu thread-per-request thường chỉ chạy được vài trăm tới vài nghìn thread như vậy.
+
+**Virtual thread** (Java 21, JEP 444) là thread do JVM quản lý. JVM gắn nó lên một **carrier thread** (một platform thread trong ForkJoinPool) chỉ trong lúc nó cần CPU. Khi virtual thread bị chặn vì I/O (`Thread.sleep`, socket, JDBC…), JVM **tháo nó khỏi carrier** để carrier chạy việc khác. Nhờ vậy có thể tạo **hàng trăm nghìn** virtual thread.
+
+```java
+try (ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor()) {
+    Future<String> a = ex.submit(() -> callServiceA());
+    Future<String> b = ex.submit(() -> callServiceB());
+    return a.get() + b.get();
+} // close() chờ mọi task xong
+```
+
+| | Platform thread | Virtual thread |
+|---|---|---|
+| Chi phí tạo | Cao, nên phải dùng pool | Rất rẻ, **mỗi task một thread** |
+| Số lượng | Vài nghìn | Hàng trăm nghìn |
+| Hợp với | Việc nặng CPU | Việc **chờ I/O** (HTTP, DB, file) |
+
+## Quy tắc dùng
+
+- **Đừng gom virtual thread vào pool.** Chúng rẻ, nên mỗi task một thread. Muốn **giới hạn số lời gọi đồng thời** tới một hệ thống phía sau (DB chỉ có 10 connection, API đối tác chỉ cho 5 request cùng lúc) thì dùng `Semaphore`, không giới hạn bằng kích thước pool.
+- **Pinning:** trong Java 21, virtual thread chặn I/O **bên trong `synchronized`** sẽ bị ghim vào carrier, nên mất lợi ích. Với đoạn có I/O, hãy dùng `ReentrantLock` (Java 24 đã sửa lỗi này).
+- `ThreadLocal` vẫn dùng được, nhưng có một triệu thread thì có một triệu bản sao. Nên ưu tiên truyền tham số, hoặc dùng `ScopedValue` (preview).
+- Virtual thread **không làm việc nặng CPU nhanh hơn**. Nó chỉ giúp **chờ** I/O rẻ hơn.
+
+## Trong Spring Boot 3.2+
+
+```yaml
+spring.threads.virtual.enabled: true
+```
+
+Bật dòng này thì Tomcat, `@Async` và `@Scheduled` đều chạy trên virtual thread.
+
+## Bắt lỗi từ Future
+
+`future.get()` ném `ExecutionException` bọc lỗi thật bên trong. Hãy lấy `e.getCause()` ra để báo lỗi cho rõ, đừng nuốt mất lỗi.
+%%% quiz
+? Virtual thread giúp ích nhiều nhất cho loại việc nào?
+- Tính toán nặng CPU như nén ảnh hay mã hoá
+* Việc chủ yếu chờ I/O như gọi HTTP hay truy vấn DB
+- Việc cần độ trễ thấp hơn 1 micro giây
+> Khi chờ I/O, virtual thread nhả carrier ra. Với việc nặng CPU thì số nhân CPU mới là giới hạn.
+? Muốn tối đa 10 lời gọi đồng thời tới DB khi dùng virtual thread thì nên làm gì?
+- Tạo `newFixedThreadPool(10)` cho virtual thread
+* Dùng `Semaphore(10)` bao quanh lời gọi DB
+- Không cần giới hạn vì virtual thread rất rẻ
+> Virtual thread không nên gom pool. Thứ hữu hạn là tài nguyên phía sau, nên giới hạn bằng Semaphore hoặc bằng connection pool.
+? Trong Java 21, điều gì làm virtual thread bị "ghim" (pinning) vào carrier thread?
+* Chặn I/O bên trong khối `synchronized`
+- Gọi `ReentrantLock.lock()`
+- Gọi `Thread.sleep()`
+? `ExecutorService` tạo bằng `newVirtualThreadPerTaskExecutor()` trong try-with-resources sẽ làm gì khi `close()`?
+- Huỷ ngay mọi task đang chạy
+* Chờ mọi task đã submit chạy xong
+- Không làm gì, phải tự gọi shutdown
+%%% hints
+- `fetchAll`: mở `Executors.newVirtualThreadPerTaskExecutor()` trong try-with-resources. Submit hết các lời gọi trước, giữ `List<Future<R>>`, rồi mới `get()` lần lượt từng cái để giữ đúng thứ tự.
+- Bọc lỗi: `catch (ExecutionException e) { throw new IllegalStateException("...", e.getCause()); }`. Với `InterruptedException` thì gọi lại `Thread.currentThread().interrupt()` rồi ném tiếp.
+- `fetchLimited`: tạo `Semaphore sem = new Semaphore(max)`. Bọc mỗi Supplier thành `() -> { sem.acquireUninterruptibly(); try { return c.get(); } finally { sem.release(); } }` rồi gọi `fetchAll`.
+%%% starter
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.function.Supplier;
+
+class Fanout {
+    /**
+     * Chạy mọi lời gọi SONG SONG, mỗi lời gọi một virtual thread, và trả kết quả đúng thứ tự đầu vào.
+     * Nếu có lời gọi lỗi thì ném IllegalStateException với cause là lỗi gốc.
+     */
+    static <R> List<R> fetchAll(List<Supplier<R>> calls) {
+        // TODO: hiện đang chạy tuần tự trên thread hiện tại
+        List<R> out = new ArrayList<>();
+        for (Supplier<R> c : calls) out.add(c.get());
+        return out;
+    }
+
+    /** Như fetchAll nhưng tối đa maxConcurrent lời gọi chạy cùng lúc (maxConcurrent phải > 0). */
+    static <R> List<R> fetchLimited(List<Supplier<R>> calls, int maxConcurrent) {
+        return fetchAll(calls); // TODO
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+
+class Tests {
+    static Supplier<Integer> slow(int value, long ms) {
+        return () -> {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            return value;
+        };
+    }
+
+    static void run(T t) {
+        t.test("giữ đúng thứ tự kết quả", () -> {
+            List<Supplier<Integer>> calls = List.of(slow(1, 60), slow(2, 10), slow(3, 30));
+            T.eq(List.of(1, 2, 3), Fanout.fetchAll(calls));
+        });
+        t.test("100 lời gọi 30ms chạy song song (< 1s)", () -> {
+            List<Supplier<Integer>> calls = new ArrayList<>();
+            for (int i = 0; i < 100; i++) calls.add(slow(i, 30));
+            long start = System.nanoTime();
+            List<Integer> r = Fanout.fetchAll(calls);
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            T.eq(100, r.size());
+            T.eq(99, r.get(99));
+            T.ok(ms < 1000, "mất " + ms + "ms, các lời gọi đang chạy tuần tự?");
+        });
+        t.test("chạy trên virtual thread", () -> {
+            AtomicInteger virtual = new AtomicInteger();
+            List<Supplier<Integer>> calls = new ArrayList<>();
+            for (int i = 0; i < 20; i++) {
+                calls.add(() -> {
+                    if (Thread.currentThread().isVirtual()) virtual.incrementAndGet();
+                    return 0;
+                });
+            }
+            Fanout.fetchAll(calls);
+            T.eq("số lời gọi chạy trên virtual thread", 20, virtual.get());
+        });
+        t.test("lỗi được bọc trong IllegalStateException, giữ cause", () -> {
+            List<Supplier<Integer>> calls = List.of(slow(1, 5), () -> {
+                throw new RuntimeException("boom");
+            });
+            IllegalStateException e = T.throwsEx(IllegalStateException.class, () -> Fanout.fetchAll(calls));
+            T.eq("message của cause", "boom", e.getCause() == null ? null : e.getCause().getMessage());
+        });
+        t.test("fetchLimited không vượt quá maxConcurrent", () -> {
+            AtomicInteger running = new AtomicInteger();
+            AtomicInteger peak = new AtomicInteger();
+            List<Supplier<Integer>> calls = new ArrayList<>();
+            for (int i = 0; i < 30; i++) {
+                int v = i;
+                calls.add(() -> {
+                    peak.accumulateAndGet(running.incrementAndGet(), Math::max);
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                    running.decrementAndGet();
+                    return v;
+                });
+            }
+            List<Integer> r = Fanout.fetchLimited(calls, 5);
+            T.eq(30, r.size());
+            T.eq(29, r.get(29));
+            T.ok(peak.get() <= 5, "có lúc " + peak.get() + " lời gọi chạy cùng lúc, giới hạn là 5");
+            T.ok(peak.get() >= 2, "fetchLimited vẫn phải chạy song song (peak=" + peak.get() + ")");
+        });
+        t.test("fetchLimited: maxConcurrent <= 0 thì ném IllegalArgumentException", () ->
+                T.throwsEx(IllegalArgumentException.class, () -> Fanout.fetchLimited(List.of(), 0)));
+    }
+}
+%%% solution
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.function.Supplier;
+
+class Fanout {
+    static <R> List<R> fetchAll(List<Supplier<R>> calls) {
+        try (ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<R>> futures = new ArrayList<>();
+            for (Supplier<R> c : calls) futures.add(ex.submit(c::get));
+            List<R> out = new ArrayList<>(futures.size());
+            for (Future<R> f : futures) out.add(join(f));
+            return out;
+        }
+    }
+
+    static <R> List<R> fetchLimited(List<Supplier<R>> calls, int maxConcurrent) {
+        if (maxConcurrent <= 0) throw new IllegalArgumentException("maxConcurrent phải > 0");
+        Semaphore sem = new Semaphore(maxConcurrent);
+        List<Supplier<R>> guarded = new ArrayList<>();
+        for (Supplier<R> c : calls) {
+            guarded.add(() -> {
+                sem.acquireUninterruptibly();
+                try {
+                    return c.get();
+                } finally {
+                    sem.release();
+                }
+            });
+        }
+        return fetchAll(guarded);
+    }
+
+    private static <R> R join(Future<R> f) {
+        try {
+            return f.get();
+        } catch (ExecutionException e) {
+            throw new IllegalStateException("Một lời gọi bị lỗi", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Bị ngắt khi chờ kết quả", e);
+        }
+    }
+}

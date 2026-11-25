@@ -1,0 +1,255 @@
+%%% meta
+id: py-15
+title: Rate limiting — sliding window và khoá đăng nhập sai
+level: advanced
+topic: Bảo mật & hệ thống
+order: 15
+%%% theory
+## Fixed window có lỗ hổng ở ranh giới
+
+Giới hạn "100 request mỗi phút" theo **cửa sổ cố định** (đặt lại đúng lúc hh:mm:00) có thể bị lách. Client gửi 100 request lúc 00:59 và thêm 100 request lúc 01:00, tức **200 request trong 2 giây**.
+
+## Sliding window log
+
+Với mỗi client, lưu thời điểm của các request trong khoảng `window` giây gần nhất:
+
+```
+allow(key):
+    bỏ các timestamp <= now - window      (deque.popleft khi đã quá hạn)
+    if len < limit: append(now); return True
+    return False
+retry_after = (timestamp cũ nhất + window) - now
+```
+
+Cách này chính xác, nhưng tốn bộ nhớ tỉ lệ với `limit`. Ở quy mô lớn, người ta dùng **sliding window counter** (xấp xỉ) hoặc **token bucket**, và lưu trên Redis (`ZSET` hoặc `INCR` + `EXPIRE`).
+
+## Chống brute-force đăng nhập
+
+- Đếm số lần đăng nhập **sai liên tiếp** theo từng tài khoản. Vượt ngưỡng thì **khoá tạm** (ví dụ 5 lần sai thì khoá 5 phút).
+- Đăng nhập đúng thì reset bộ đếm.
+- Trả về cùng một thông báo cho "sai user" và "sai mật khẩu", để kẻ tấn công không dò ra được user nào có tồn tại.
+- Thường kết hợp với rate limit theo IP.
+
+## Thiết kế để test được
+
+Truyền `clock` vào constructor. Test dùng đồng hồ giả để "tua" 5 phút trong tích tắc, không cần `sleep`.
+%%% quiz
+? Nhược điểm của fixed window là gì?
+* Có thể bị gửi dồn gấp đôi giới hạn quanh thời điểm đổi cửa sổ
+- Tốn quá nhiều bộ nhớ
+- Không cài đặt được bằng Redis
+? Đăng nhập thành công thì bộ đếm số lần sai nên…
+- giữ nguyên
+* được reset về 0
+- tăng lên 1
+%%% hints
+- Dùng `defaultdict(deque)` để lưu timestamp theo từng key. Viết hàm `_evict(q, now)` xoá dần từ trái khi `q[0] <= now - window`.
+- `retry_after`: nếu còn lượt thì trả 0, ngược lại trả `q[0] + window - now`.
+- LoginGuard: lưu `failures[user]` và `locked_until[user]`. `is_locked` so sánh `clock() < locked_until`. Khi hết thời gian khoá thì đếm lại từ đầu.
+%%% starter
+import time
+from collections import defaultdict, deque
+
+
+class SlidingWindowLimiter:
+    def __init__(self, limit: int, window: float, clock=time.monotonic):
+        self.limit, self.window, self.clock = limit, window, clock
+
+    def allow(self, key: str) -> bool:
+        return True  # TODO
+
+    def remaining(self, key: str) -> int:
+        return self.limit  # TODO
+
+    def retry_after(self, key: str) -> float:
+        """Số giây cần chờ tới khi có lượt mới; 0 nếu còn lượt."""
+        return 0.0  # TODO
+
+
+class LoginGuard:
+    def __init__(self, max_failures: int = 5, lock_seconds: float = 300, clock=time.monotonic):
+        self.max_failures, self.lock_seconds, self.clock = max_failures, lock_seconds, clock
+
+    def is_locked(self, user: str) -> bool:
+        return False  # TODO
+
+    def record_failure(self, user: str) -> None:
+        pass  # TODO: đủ max_failures lần sai liên tiếp -> khoá lock_seconds
+
+    def record_success(self, user: str) -> None:
+        pass  # TODO
+
+
+def login(guard: LoginGuard, users: dict, username: str, password: str) -> tuple[int, str]:
+    """(423, "Tài khoản tạm khoá") nếu đang khoá; (401, "Sai tài khoản hoặc mật khẩu") nếu sai
+    (cùng thông báo cho user không tồn tại); (200, "OK") nếu đúng."""
+    return 200, "OK"  # TODO
+%%% tests
+from checker import test, eq, ok, near
+from solution import *
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@test("cho phép tối đa limit trong window")
+def _():
+    rl = SlidingWindowLimiter(3, 60, FakeClock())
+    eq([True, True, True, False], [rl.allow("ip") for _ in range(4)])
+
+
+@test("cửa sổ trượt: request cũ hết hạn thì có lượt")
+def _():
+    clock = FakeClock()
+    rl = SlidingWindowLimiter(2, 10, clock)
+    rl.allow("ip")            # t=1000
+    clock.now = 1005
+    rl.allow("ip")            # t=1005
+    eq(False, rl.allow("ip"))
+    clock.now = 1010          # request lúc 1000 vừa hết hạn
+    eq(True, rl.allow("ip"))
+    eq(False, rl.allow("ip"))
+
+
+@test("không bị lách ở ranh giới như fixed window")
+def _():
+    clock = FakeClock()
+    rl = SlidingWindowLimiter(5, 60, clock)
+    clock.now = 1059
+    for _ in range(5):
+        rl.allow("ip")
+    clock.now = 1061
+    eq(False, rl.allow("ip"))
+
+
+@test("remaining và retry_after")
+def _():
+    clock = FakeClock()
+    rl = SlidingWindowLimiter(2, 10, clock)
+    eq(2, rl.remaining("u"))
+    eq(0.0, rl.retry_after("u"))
+    rl.allow("u")
+    clock.now = 1003
+    rl.allow("u")
+    eq(0, rl.remaining("u"))
+    near(7.0, rl.retry_after("u"))
+
+
+@test("mỗi key độc lập")
+def _():
+    rl = SlidingWindowLimiter(1, 60, FakeClock())
+    ok(rl.allow("a") and rl.allow("b"), "a và b có lượt riêng")
+
+
+@test("LoginGuard khoá sau 3 lần sai, mở sau lock_seconds")
+def _():
+    clock = FakeClock()
+    g = LoginGuard(3, 300, clock)
+    for _ in range(2):
+        g.record_failure("an")
+    eq(False, g.is_locked("an"))
+    g.record_failure("an")
+    eq(True, g.is_locked("an"))
+    clock.now += 299
+    eq(True, g.is_locked("an"))
+    clock.now += 1
+    eq(False, g.is_locked("an"))
+    g.record_failure("an")
+    eq(False, g.is_locked("an"), "hết khoá thì đếm lại từ đầu")
+
+
+@test("đăng nhập đúng thì reset bộ đếm")
+def _():
+    g = LoginGuard(3, 300, FakeClock())
+    g.record_failure("an")
+    g.record_failure("an")
+    g.record_success("an")
+    g.record_failure("an")
+    g.record_failure("an")
+    eq(False, g.is_locked("an"))
+
+
+@test("login: thông báo giống nhau, khoá trả 423")
+def _():
+    users = {"an": "s3cret"}
+    g = LoginGuard(2, 300, FakeClock())
+    eq((401, "Sai tài khoản hoặc mật khẩu"), login(g, users, "ghost", "x"))
+    eq((401, "Sai tài khoản hoặc mật khẩu"), login(g, users, "an", "x"))
+    eq((200, "OK"), login(g, users, "an", "s3cret"))
+    login(g, users, "an", "x")
+    login(g, users, "an", "x")
+    eq((423, "Tài khoản tạm khoá"), login(g, users, "an", "s3cret"))
+%%% solution
+import time
+from collections import defaultdict, deque
+
+
+class SlidingWindowLimiter:
+    def __init__(self, limit: int, window: float, clock=time.monotonic):
+        self.limit, self.window, self.clock = limit, window, clock
+        self._hits: dict[str, deque] = defaultdict(deque)
+
+    def _evict(self, key: str) -> deque:
+        q, now = self._hits[key], self.clock()
+        while q and q[0] <= now - self.window:
+            q.popleft()
+        return q
+
+    def allow(self, key: str) -> bool:
+        q = self._evict(key)
+        if len(q) < self.limit:
+            q.append(self.clock())
+            return True
+        return False
+
+    def remaining(self, key: str) -> int:
+        return self.limit - len(self._evict(key))
+
+    def retry_after(self, key: str) -> float:
+        q = self._evict(key)
+        if len(q) < self.limit:
+            return 0.0
+        return q[0] + self.window - self.clock()
+
+
+class LoginGuard:
+    def __init__(self, max_failures: int = 5, lock_seconds: float = 300, clock=time.monotonic):
+        self.max_failures, self.lock_seconds, self.clock = max_failures, lock_seconds, clock
+        self._failures: dict[str, int] = {}
+        self._locked_until: dict[str, float] = {}
+
+    def is_locked(self, user: str) -> bool:
+        until = self._locked_until.get(user)
+        if until is None:
+            return False
+        if self.clock() < until:
+            return True
+        del self._locked_until[user]
+        self._failures.pop(user, None)
+        return False
+
+    def record_failure(self, user: str) -> None:
+        if self.is_locked(user):
+            return
+        self._failures[user] = self._failures.get(user, 0) + 1
+        if self._failures[user] >= self.max_failures:
+            self._locked_until[user] = self.clock() + self.lock_seconds
+
+    def record_success(self, user: str) -> None:
+        self._failures.pop(user, None)
+        self._locked_until.pop(user, None)
+
+
+def login(guard: LoginGuard, users: dict, username: str, password: str) -> tuple[int, str]:
+    if guard.is_locked(username):
+        return 423, "Tài khoản tạm khoá"
+    if users.get(username) != password:
+        guard.record_failure(username)
+        return 401, "Sai tài khoản hoặc mật khẩu"
+    guard.record_success(username)
+    return 200, "OK"

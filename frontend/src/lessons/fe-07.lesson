@@ -1,0 +1,184 @@
+%%% meta
+id: fe-07
+title: Event loop, debounce và throttle
+level: intermediate
+topic: Bất đồng bộ
+order: 7
+%%% theory
+## Event loop
+
+JavaScript trên trình duyệt chạy trên **một thread**. Thứ tự thực thi:
+
+1. Chạy hết code đồng bộ hiện tại (call stack).
+2. Chạy **toàn bộ microtask**: `Promise.then`, `await`, `queueMicrotask`.
+3. Trình duyệt có thể vẽ lại màn hình (render).
+4. Lấy **một macrotask**: `setTimeout`, sự kiện, `MessageChannel`. Rồi quay lại bước 1.
+
+```js
+console.log('A');
+setTimeout(() => console.log('B'), 0);
+Promise.resolve().then(() => console.log('C'));
+console.log('D');
+// A D C B
+```
+
+Một vòng lặp nặng 2 giây sẽ **đơ toàn bộ trang**, kể cả click và animation, vì thread đang bận.
+
+## Debounce: chờ người dùng ngừng thao tác
+
+Ví dụ ô tìm kiếm: chỉ gọi API khi người dùng **ngừng gõ** khoảng 300ms.
+
+```js
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+```
+
+## Throttle: tối đa một lần mỗi khoảng
+
+Dùng cho scroll, resize hay kéo thả: chạy **ngay lần đầu**, sau đó bỏ qua mọi lần gọi trong `ms` tiếp theo.
+
+| | Khi người dùng gõ liên tục 2 giây |
+|---|---|
+| debounce 300ms | chạy **1 lần**, khoảng 300ms sau phím cuối |
+| throttle 300ms | chạy khoảng **7 lần**, đều đặn |
+
+## Hủy
+
+Debounce trong component cần có `cancel()`, để khi unmount thì không còn gọi vào component đã bị gỡ.
+%%% quiz
+? Đoạn code trong phần lý thuyết in ra theo thứ tự nào?
+- A B C D
+- A C D B
+* A D C B
+? Ô tìm kiếm gọi API, nên dùng gì?
+* debounce
+- throttle
+- setInterval
+? `await` tiếp tục chạy ở loại task nào?
+* microtask
+- macrotask
+%%% hints
+- eventOrder: đọc lại 4 bước của event loop. Code đồng bộ chạy trước, sau đó đến các microtask theo thứ tự đăng ký, cuối cùng là các macrotask.
+- debounce: lưu `timer`; `cancel` gọi `clearTimeout(timer)`; `flush` chạy ngay lần gọi đang chờ (nhớ lưu lại `lastArgs`).
+- throttle: lưu `last` (thời điểm lần chạy gần nhất); chỉ chạy khi `Date.now() - last >= ms`.
+%%% starter
+/** Trả về mảng thứ tự in ra của đoạn code bên dưới (đừng chạy, hãy suy luận!) */
+function eventOrder() {
+  // console.log('1');
+  // setTimeout(() => console.log('2'), 0);
+  // Promise.resolve().then(() => console.log('3')).then(() => console.log('4'));
+  // queueMicrotask(() => console.log('5'));
+  // console.log('6');
+  return ['1', '2', '3', '4', '5', '6']; // TODO
+}
+
+/** debounce có .cancel() và .flush() */
+function debounce(fn, ms) {
+  const d = (...args) => fn(...args); // TODO
+  d.cancel = () => {};
+  d.flush = () => {};
+  return d;
+}
+
+/** throttle: chạy ngay lần đầu, bỏ qua các lần gọi trong ms tiếp theo */
+function throttle(fn, ms) {
+  return fn; // TODO
+}
+%%% tests
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('eventOrder', () => {
+  expect(eventOrder()).toEqual(['1', '6', '3', '5', '4', '2']);
+});
+
+test('debounce chỉ chạy một lần sau khi ngừng gọi, với tham số cuối', async () => {
+  const f = fn();
+  const d = debounce(f, 40);
+  d('a');
+  d('b');
+  await wait(20);
+  d('c');
+  expect(f.calls.length).toBe(0);
+  await wait(70);
+  expect(f.calls).toEqual([['c']]);
+});
+
+test('debounce.cancel', async () => {
+  const f = fn();
+  const d = debounce(f, 20);
+  d(1);
+  d.cancel();
+  await wait(50);
+  expect(f.calls.length).toBe(0);
+});
+
+test('debounce.flush chạy ngay lần đang chờ', async () => {
+  const f = fn();
+  const d = debounce(f, 1000);
+  d('x');
+  d.flush();
+  expect(f.calls).toEqual([['x']]);
+  await wait(20);
+  d.flush();
+  expect(f.calls.length).toBe(1);
+});
+
+test('throttle', async () => {
+  const f = fn();
+  const t = throttle(f, 50);
+  t(1);
+  t(2);
+  t(3);
+  expect(f.calls).toEqual([[1]]);
+  await wait(70);
+  t(4);
+  expect(f.calls).toEqual([[1], [4]]);
+});
+%%% solution
+function eventOrder() {
+  return ['1', '6', '3', '5', '4', '2'];
+}
+
+function debounce(fn, ms) {
+  let timer = null;
+  let lastArgs = null;
+  const run = () => {
+    timer = null;
+    const args = lastArgs;
+    lastArgs = null;
+    fn(...args);
+  };
+  const d = (...args) => {
+    lastArgs = args;
+    clearTimeout(timer);
+    timer = setTimeout(run, ms);
+  };
+  d.cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+    lastArgs = null;
+  };
+  d.flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      run();
+    }
+  };
+  return d;
+}
+
+function throttle(fn, ms) {
+  let last = -Infinity;
+  return (...args) => {
+    const now = Date.now();
+    if (now - last >= ms) {
+      last = now;
+      fn(...args);
+    }
+  };
+}

@@ -1,0 +1,216 @@
+%%% meta
+id: java-06
+title: Generics — kiểu tổng quát, bounded type, PECS
+level: intermediate
+topic: Generics
+order: 6
+%%% theory
+## Vì sao cần generics
+
+Generics giúp bắt lỗi kiểu ngay **lúc compile**, thay vì để `ClassCastException` xảy ra lúc chạy:
+
+```java
+List<String> names = new ArrayList<>();
+names.add(42); // lỗi compile, tốt!
+```
+
+## Class và method generic
+
+```java
+final class Result<T> {               // class generic
+    static <T> Result<T> ok(T v) {...} // method generic, có <T> riêng
+    <R> Result<R> map(Function<? super T, ? extends R> f) {...}
+}
+```
+
+## Bounded type
+
+`<T extends Comparable<? super T>>`: T phải so sánh được với T hoặc với một kiểu cha của T. Đây là chữ ký chuẩn của `Collections.max`.
+
+## Wildcard và quy tắc PECS
+
+**P**roducer **E**xtends, **C**onsumer **S**uper:
+
+```java
+static <T> void copyAll(List<? super T> dst, List<? extends T> src)
+//                       ^ dst NHẬN T (consumer)  ^ src CHO ra T (producer)
+```
+
+Nhờ vậy, chép được một `List<Integer>` vào `List<Number>`.
+
+## Type erasure
+
+Lúc chạy, `List<String>` và `List<Integer>` là cùng một class `List`. Hệ quả:
+
+- không viết được `new T()`;
+- không kiểm tra được `instanceof List<String>`;
+- muốn biết kiểu lúc chạy thì phải truyền `Class<T>` vào.
+
+## Result thay cho exception
+
+Kiểu `Result<T>` (giống `Either`/`Try`) biểu diễn "thành công kèm giá trị" hoặc "lỗi kèm thông báo", mà không cần ném exception. Kiểu này hợp cho các lỗi **dự kiến được**, như parse input hoặc gọi service ngoài.
+%%% quiz
+? Muốn một method nhận cả `List<Integer>` lẫn `List<Double>` để **đọc** ra Number, dùng tham số nào?
+- List<Number>
+* List<? extends Number>
+- List<? super Number>
+> `List<Integer>` không phải là `List<Number>`, vì generics là invariant.
+? Vì sao không viết được `new T()`?
+* Vì type erasure: lúc chạy không còn thông tin T
+- Vì T luôn là interface
+- Viết được bình thường
+%%% hints
+- Result: giữ hai field `value` và `error`; `isOk()` khi `error == null`.
+- `map`: nếu là Err thì trả `Result.err(error)` (đổi kiểu), nếu là Ok thì `Result.ok(f.apply(value))`.
+- `maxOf`: list rỗng thì ném `NoSuchElementException`; duyệt và dùng `compareTo`.
+- `invert`: `computeIfAbsent(v, x -> new ArrayList<>()).add(k)`.
+%%% starter
+import java.util.*;
+import java.util.function.Function;
+
+final class Result<T> {
+    private final T value;
+    private final String error;
+
+    private Result(T value, String error) {
+        this.value = value;
+        this.error = error;
+    }
+
+    static <T> Result<T> ok(T value) { return new Result<>(value, null); }
+
+    static <T> Result<T> err(String error) { return new Result<>(null, error); }
+
+    boolean isOk() { return false; } // TODO
+
+    String error() { return error; }
+
+    T getOrElse(T fallback) { return fallback; } // TODO
+
+    <R> Result<R> map(Function<? super T, ? extends R> f) {
+        return null; // TODO
+    }
+
+    <R> Result<R> flatMap(Function<? super T, Result<R>> f) {
+        return null; // TODO
+    }
+}
+
+class Solution {
+    static Result<Integer> parseInt(String s) {
+        return Result.err("TODO");
+    }
+
+    static <T extends Comparable<? super T>> T maxOf(List<? extends T> items) {
+        return null; // TODO
+    }
+
+    /** {"a":1,"b":1,"c":2} -> {1:[a,b], 2:[c]} */
+    static <K, V> Map<V, List<K>> invert(Map<K, V> map) {
+        return new HashMap<>(); // TODO
+    }
+
+    static <T> void copyAll(List<? super T> dst, List<? extends T> src) {
+        // TODO
+    }
+}
+%%% tests
+import java.util.*;
+
+class Tests {
+    static void run(T t) {
+        t.test("ok + map", () -> T.eq(20, Result.ok(2).map(x -> x * 10).getOrElse(0)));
+        t.test("err + map giữ lỗi", () -> {
+            Result<Integer> r = Result.<Integer>err("boom").map(x -> x * 10);
+            T.eq(false, r.isOk());
+            T.eq("boom", r.error());
+            T.eq(-1, r.getOrElse(-1));
+        });
+        t.test("parseInt", () -> {
+            T.eq(42, Solution.parseInt("42").getOrElse(0));
+            T.eq(false, Solution.parseInt("4x").isOk());
+            T.ok(Solution.parseInt("4x").error() != null, "Err phải có thông báo");
+        });
+        t.test("flatMap nối chuỗi xử lý", () -> {
+            Result<Integer> r = Result.ok(" 7 ").map(String::strip).flatMap(Solution::parseInt).map(n -> n * 2);
+            T.eq(14, r.getOrElse(0));
+            T.eq(false, Result.ok("x").flatMap(Solution::parseInt).isOk());
+        });
+        t.test("maxOf số và chuỗi", () -> {
+            T.eq(9, Solution.maxOf(List.of(3, 9, 2)));
+            T.eq("b", Solution.maxOf(List.of("b", "a")));
+        });
+        t.test("maxOf rỗng -> NoSuchElementException", () ->
+                T.throwsEx(NoSuchElementException.class, () -> Solution.maxOf(List.<Integer>of())));
+        t.test("invert", () -> {
+            Map<Integer, List<String>> inv = Solution.invert(Map.of("a", 1, "b", 1, "c", 2));
+            List<String> ones = new ArrayList<>(inv.get(1));
+            Collections.sort(ones);
+            T.eq(List.of("a", "b"), ones);
+            T.eq(List.of("c"), inv.get(2));
+        });
+        t.test("copyAll Integer -> Number (PECS)", () -> {
+            List<Number> dst = new ArrayList<>(List.of(1.5));
+            Solution.copyAll(dst, List.of(1, 2));
+            T.eq(List.of(1.5, 1, 2), dst);
+        });
+    }
+}
+%%% solution
+import java.util.*;
+import java.util.function.Function;
+
+final class Result<T> {
+    private final T value;
+    private final String error;
+
+    private Result(T value, String error) {
+        this.value = value;
+        this.error = error;
+    }
+
+    static <T> Result<T> ok(T value) { return new Result<>(value, null); }
+
+    static <T> Result<T> err(String error) { return new Result<>(null, error); }
+
+    boolean isOk() { return error == null; }
+
+    String error() { return error; }
+
+    T getOrElse(T fallback) { return isOk() ? value : fallback; }
+
+    <R> Result<R> map(Function<? super T, ? extends R> f) {
+        return isOk() ? Result.ok(f.apply(value)) : Result.err(error);
+    }
+
+    <R> Result<R> flatMap(Function<? super T, Result<R>> f) {
+        return isOk() ? f.apply(value) : Result.err(error);
+    }
+}
+
+class Solution {
+    static Result<Integer> parseInt(String s) {
+        try {
+            return Result.ok(Integer.parseInt(s));
+        } catch (NumberFormatException e) {
+            return Result.err("Không phải số: " + s);
+        }
+    }
+
+    static <T extends Comparable<? super T>> T maxOf(List<? extends T> items) {
+        if (items.isEmpty()) throw new NoSuchElementException("list rỗng");
+        T best = items.get(0);
+        for (T x : items) if (x.compareTo(best) > 0) best = x;
+        return best;
+    }
+
+    static <K, V> Map<V, List<K>> invert(Map<K, V> map) {
+        Map<V, List<K>> out = new HashMap<>();
+        map.forEach((k, v) -> out.computeIfAbsent(v, x -> new ArrayList<>()).add(k));
+        return out;
+    }
+
+    static <T> void copyAll(List<? super T> dst, List<? extends T> src) {
+        dst.addAll(src);
+    }
+}

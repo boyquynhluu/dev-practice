@@ -1,0 +1,155 @@
+%%% meta
+id: fe-01
+title: Kiểu dữ liệu, so sánh và truthy/falsy
+level: core
+topic: JavaScript cơ bản
+order: 1
+%%% theory
+## 8 kiểu dữ liệu
+
+JavaScript có 7 kiểu nguyên thủy (`string`, `number`, `bigint`, `boolean`, `undefined`, `null`, `symbol`) và kiểu **object** (gồm cả array, function, Date…).
+
+```js
+typeof null        // 'object'  ← lỗi lịch sử của JS
+typeof []          // 'object'  → kiểm tra mảng bằng Array.isArray([])
+typeof NaN         // 'number'  → kiểm tra bằng Number.isNaN(x)
+typeof function(){} // 'function'
+```
+
+## `==` và `===`
+
+`==` tự **ép kiểu** trước khi so sánh, kết quả rất khó đoán:
+
+```js
+0 == ''        // true
+'1' == 1       // true
+null == undefined // true
+[] == false    // true 🤯
+```
+
+**Luôn dùng `===`**. Ngoại lệ duy nhất hay gặp là `x == null`, viết tắt cho "null hoặc undefined".
+
+## Truthy / falsy
+
+Chỉ có 8 giá trị **falsy**: `false`, `0`, `-0`, `0n`, `''`, `null`, `undefined`, `NaN`. Mọi giá trị khác đều truthy, kể cả `'0'`, `[]` và `{}`.
+
+Bẫy kinh điển: `if (count)` sai khi `count === 0`. Đọc số lượng thì dùng `??` thay cho `||`:
+
+```js
+const qty = input.qty || 1;  // ❌ qty = 0 bị đổi thành 1
+const qty = input.qty ?? 1;  // ✔ chỉ thay khi null/undefined
+```
+
+## Chuyển chuỗi thành số
+
+`Number('')` cho `0`, `Number(' 12 ')` cho `12`, còn `parseInt('12abc')` cho `12`. Mỗi cách có một bẫy riêng, nên khi validate input phải tự kiểm tra kỹ.
+
+## Cách làm bài
+
+Viết các hàm theo yêu cầu. Test gọi trực tiếp tên hàm, nên **giữ nguyên tên hàm**. Bấm **Chạy** để xem `console.log`, bấm **Chạy test** để chấm.
+%%% quiz
+? `[] == false` cho kết quả gì?
+* true
+- false
+- Lỗi
+> `==` ép `[]` thành `''`, rồi thành `0`; `false` cũng thành `0`. Vì vậy hãy dùng `===`.
+? Giá trị nào là truthy?
+- 0
+- ''
+* '0'
+- NaN
+? `input.qty || 1` sai khi nào?
+* Khi qty = 0 (0 bị thay bằng 1)
+- Khi qty = 5
+- Không bao giờ sai
+%%% hints
+- typeOf: kiểm tra `null` trước, rồi `Array.isArray`, `instanceof Date`, `Number.isNaN`, cuối cùng mới dùng `typeof`.
+- isEmpty: chuỗi thì dùng `trim() === ''`; mảng thì `length === 0`; object thường thì `Object.keys(v).length === 0`.
+- parseNumber: chỉ nhận string hoặc number; chuỗi sau khi `trim()` phải khớp `/^-?\d+(\.\d+)?$/`.
+%%% starter
+/** 'null' | 'undefined' | 'array' | 'date' | 'nan' | 'number' | 'string' | 'boolean' | 'function' | 'object' */
+function typeOf(value) {
+  return typeof value; // TODO
+}
+
+/** null, undefined, chuỗi rỗng/chỉ khoảng trắng, [] và {} là rỗng. 0 và false KHÔNG rỗng. */
+function isEmpty(value) {
+  return !value; // TODO: sai với 0, false, [], {}
+}
+
+/** Chuỗi số hợp lệ -> number ("12", " -3.5 "); còn lại -> null ("", "12abc", null, "1e3"). */
+function parseNumber(input) {
+  return Number(input); // TODO
+}
+
+/** Lấy số lượng từ object, mặc định 1. qty = 0 vẫn phải giữ là 0. */
+function getQty(item) {
+  return item.qty || 1; // TODO
+}
+
+console.log(typeOf(null), isEmpty(0), parseNumber(' 12 '));
+%%% tests
+test('typeOf phân biệt null, array, date, NaN', () => {
+  expect(typeOf(null)).toBe('null');
+  expect(typeOf([])).toBe('array');
+  expect(typeOf(new Date())).toBe('date');
+  expect(typeOf(NaN)).toBe('nan');
+  expect(typeOf(42)).toBe('number');
+  expect(typeOf({})).toBe('object');
+  expect(typeOf(undefined)).toBe('undefined');
+  expect(typeOf(() => 1)).toBe('function');
+});
+
+test('isEmpty với các giá trị rỗng', () => {
+  for (const v of [null, undefined, '', '   ', [], {}]) expect(isEmpty(v)).toBe(true);
+});
+
+test('isEmpty: 0, false, [0], {a:1} KHÔNG rỗng', () => {
+  for (const v of [0, false, [0], { a: 1 }, 'x']) expect(isEmpty(v)).toBe(false);
+});
+
+test('parseNumber hợp lệ', () => {
+  expect(parseNumber('12')).toBe(12);
+  expect(parseNumber(' -3.5 ')).toBe(-3.5);
+  expect(parseNumber(7)).toBe(7);
+});
+
+test('parseNumber không hợp lệ -> null', () => {
+  for (const v of ['', '   ', '12abc', 'abc', null, undefined, '1e3', '1.']) expect(parseNumber(v)).toBe(null);
+});
+
+test('getQty giữ 0, mặc định 1', () => {
+  expect(getQty({ qty: 0 })).toBe(0);
+  expect(getQty({})).toBe(1);
+  expect(getQty({ qty: null })).toBe(1);
+  expect(getQty({ qty: 3 })).toBe(3);
+});
+%%% solution
+function typeOf(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (value instanceof Date) return 'date';
+  if (Number.isNaN(value)) return 'nan';
+  return typeof value;
+}
+
+function isEmpty(value) {
+  if (value == null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object' && !(value instanceof Date)) return Object.keys(value).length === 0;
+  return false;
+}
+
+function parseNumber(input) {
+  if (typeof input === 'number') return Number.isFinite(input) ? input : null;
+  if (typeof input !== 'string') return null;
+  const s = input.trim();
+  return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : null;
+}
+
+function getQty(item) {
+  return item.qty ?? 1;
+}
+
+console.log(typeOf(null), isEmpty(0), parseNumber(' 12 '));

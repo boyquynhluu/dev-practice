@@ -1,0 +1,220 @@
+%%% meta
+id: py-05
+title: Exception, file I/O, CSV/JSON
+level: core
+topic: Xử lý lỗi
+order: 5
+%%% theory
+## try / except / else / finally
+
+```python
+try:
+    data = json.loads(text)
+except json.JSONDecodeError as e:     # bắt lỗi CỤ THỂ, không bắt chung chung
+    raise ConfigError("config hỏng") from e   # giữ nguyên nhân gốc (__cause__)
+else:
+    print("chỉ chạy khi không có lỗi")
+finally:
+    print("luôn chạy")
+```
+
+- **Không** viết `except:` hay `except Exception: pass`, vì sẽ nuốt mất cả bug.
+- Exception riêng của ứng dụng nên kế thừa `Exception` và mang theo dữ liệu (dòng, field).
+- **EAFP** (Easier to Ask Forgiveness than Permission) là phong cách Python: cứ thử mở file, lỗi thì bắt `FileNotFoundError`, thay vì `if os.path.exists(...)` trước. Cách kiểm tra trước còn bị race condition.
+
+## Làm việc với file
+
+```python
+from pathlib import Path
+p = Path("data") / "users.csv"
+with p.open(encoding="utf-8", newline="") as f:      # luôn ghi rõ encoding
+    for row in csv.DictReader(f):
+        ...
+```
+
+`with` tự đóng file kể cả khi có exception (context manager).
+
+## Ghi file an toàn (atomic write)
+
+Nếu chương trình chết giữa lúc ghi, file sẽ bị hỏng một nửa. Cách an toàn: **ghi ra file tạm cùng thư mục, rồi `os.replace`**. `os.replace` là thao tác atomic trên cùng một ổ đĩa.
+
+```python
+tmp = path.with_suffix(".tmp")
+tmp.write_text(content, encoding="utf-8")
+os.replace(tmp, path)
+```
+
+## Import dữ liệu: gom lỗi theo dòng
+
+Khi import CSV, đừng dừng ở dòng lỗi đầu tiên. Hãy ghi lại *dòng nào, lỗi gì*, nhập các dòng tốt, rồi trả báo cáo về cho người dùng.
+%%% quiz
+? `raise NewError() from e` dùng để làm gì?
+* Giữ lỗi gốc làm nguyên nhân (`__cause__`) để debug
+- Bỏ qua lỗi e
+- Ném cả hai lỗi cùng lúc
+? Ghi file JSON quan trọng thế nào cho an toàn khi chương trình có thể chết giữa chừng?
+- Ghi trực tiếp đè lên file cũ
+* Ghi ra file tạm rồi gọi `os.replace`
+- Ghi hai lần
+%%% hints
+- load_users: `reader = csv.DictReader(f)`; số dòng hiện tại là `reader.line_num` (đếm cả header và dòng trống, khác với enumerate).
+- Validate trong try/except `ValueError` khi gọi `int(age)`; mỗi dòng lỗi thì thêm một `RowError(line, message)`.
+- read_config: `except FileNotFoundError: return dict(default)`; `except json.JSONDecodeError as e: raise ConfigError(...) from e`.
+%%% starter
+import csv
+import json
+import os
+from pathlib import Path
+
+
+class RowError(Exception):
+    def __init__(self, line: int, message: str):
+        super().__init__(f"dòng {line}: {message}")
+        self.line, self.message = line, message
+
+
+class ConfigError(Exception):
+    pass
+
+
+def load_users(path: Path) -> tuple[list[dict], list[RowError]]:
+    """CSV có header name,email,age. Trả (users hợp lệ, lỗi theo dòng).
+    Hợp lệ: name không trống, email chứa '@', age là số nguyên 0..150. Bỏ qua dòng trống hoàn toàn.
+    User trả về: {"name": str đã strip, "email": str viết thường, "age": int}"""
+    return [], []  # TODO
+
+
+def write_report(path: Path, users: list[dict]) -> None:
+    """Ghi JSON (UTF-8, không escape tiếng Việt, sắp theo name) theo kiểu atomic."""
+    pass  # TODO
+
+
+def read_config(path: Path, default: dict) -> dict:
+    """Không có file -> bản sao default; JSON hỏng -> ConfigError (giữ cause)."""
+    return default  # TODO
+%%% tests
+import json
+import tempfile
+from pathlib import Path
+
+from checker import test, eq, ok, raises
+from solution import *
+
+CSV = "name,email,age\n An ,AN@X.VN,20\n,b@x.vn,30\nChi,chi-at-x,40\n\nDung,d@x.vn,abc\nEm,e@x.vn,200\nGiang,g@x.vn,25\n"
+
+
+def tmp_dir() -> Path:
+    return Path(tempfile.mkdtemp())
+
+
+@test("load_users tách dòng hợp lệ")
+def _():
+    p = tmp_dir() / "u.csv"
+    p.write_text(CSV, encoding="utf-8")
+    users, errors = load_users(p)
+    eq([{"name": "An", "email": "an@x.vn", "age": 20}, {"name": "Giang", "email": "g@x.vn", "age": 25}], users)
+
+
+@test("load_users báo đúng số dòng lỗi")
+def _():
+    p = tmp_dir() / "u.csv"
+    p.write_text(CSV, encoding="utf-8")
+    _, errors = load_users(p)
+    eq([3, 4, 6, 7], [e.line for e in errors])
+    ok(all(isinstance(e, RowError) for e in errors), "phải là RowError")
+
+
+@test("write_report: JSON tiếng Việt, sắp xếp, không để lại file tạm")
+def _():
+    d = tmp_dir()
+    p = d / "report.json"
+    write_report(p, [{"name": "Đức"}, {"name": "An"}])
+    text = p.read_text(encoding="utf-8")
+    ok("Đức" in text, "phải dùng ensure_ascii=False")
+    eq(["An", "Đức"], [u["name"] for u in json.loads(text)])
+    eq(["report.json"], sorted(f.name for f in d.iterdir()))
+
+
+@test("read_config: không có file -> default (bản sao)")
+def _():
+    default = {"debug": False}
+    cfg = read_config(tmp_dir() / "nope.json", default)
+    eq(default, cfg)
+    ok(cfg is not default, "phải trả bản sao, không trả chính default")
+
+
+@test("read_config: JSON hỏng -> ConfigError giữ cause")
+def _():
+    p = tmp_dir() / "c.json"
+    p.write_text("{hỏng", encoding="utf-8")
+    e = raises(ConfigError, read_config, p, {})
+    ok(isinstance(e.__cause__, json.JSONDecodeError), "phải raise ... from e")
+
+
+@test("read_config: đọc được file đúng")
+def _():
+    p = tmp_dir() / "c.json"
+    p.write_text('{"port": 8080}', encoding="utf-8")
+    eq({"port": 8080}, read_config(p, {}))
+%%% solution
+import csv
+import json
+import os
+from pathlib import Path
+
+
+class RowError(Exception):
+    def __init__(self, line: int, message: str):
+        super().__init__(f"dòng {line}: {message}")
+        self.line, self.message = line, message
+
+
+class ConfigError(Exception):
+    pass
+
+
+def load_users(path: Path) -> tuple[list[dict], list[RowError]]:
+    users, errors = [], []
+    with Path(path).open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            line_no = reader.line_num  # số dòng vật lý, kể cả dòng trống mà csv bỏ qua
+            if not any((v or "").strip() for v in row.values()):
+                continue
+            name = (row.get("name") or "").strip()
+            email = (row.get("email") or "").strip().lower()
+            if not name:
+                errors.append(RowError(line_no, "name trống"))
+                continue
+            if "@" not in email:
+                errors.append(RowError(line_no, "email không hợp lệ"))
+                continue
+            try:
+                age = int((row.get("age") or "").strip())
+            except ValueError:
+                errors.append(RowError(line_no, "age phải là số"))
+                continue
+            if not 0 <= age <= 150:
+                errors.append(RowError(line_no, "age ngoài khoảng"))
+                continue
+            users.append({"name": name, "email": email, "age": age})
+    return users, errors
+
+
+def write_report(path: Path, users: list[dict]) -> None:
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    data = sorted(users, key=lambda u: u["name"])
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_config(path: Path, default: dict) -> dict:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return dict(default)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"Config hỏng: {path}") from e

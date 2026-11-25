@@ -1,0 +1,231 @@
+%%% meta
+id: java-05
+title: Exception, validation và try-with-resources
+level: core
+topic: Xử lý lỗi
+order: 5
+%%% theory
+## Checked và unchecked
+
+- **Checked** (`IOException`, `SQLException`): compiler bắt buộc phải `catch` hoặc khai báo `throws`.
+- **Unchecked** (`RuntimeException` và các lớp con): không bắt buộc. Spring dùng loại này gần như ở mọi nơi.
+
+Trong backend hiện đại, exception nghiệp vụ thường kế thừa `RuntimeException`. Sau đó một `@RestControllerAdvice` chung sẽ đổi nó thành HTTP 400/404/409.
+
+## Nguyên tắc
+
+1. **Đừng nuốt lỗi**: `catch (Exception e) {}` là lỗi nghiêm trọng, vì bug sẽ biến mất không dấu vết.
+2. **Bọc lỗi kèm cause**: `throw new ValidationException(..., e)` giữ lại stack trace gốc.
+3. **Fail fast**: validate dữ liệu ngay ở biên (controller hoặc factory), để phần lõi chỉ nhận dữ liệu đã hợp lệ.
+4. **Gom đủ lỗi form**: với form người dùng nhập, báo *tất cả* các trường sai trong một lần, đừng bắt họ sửa từng trường một.
+
+## try-with-resources
+
+Mọi tài nguyên `AutoCloseable` (file, connection, stream) đều phải được đóng, **kể cả khi có exception**:
+
+```java
+try (BufferedReader r = Files.newBufferedReader(path)) {
+    return r.readLine();
+} // r.close() luôn được gọi
+```
+
+Cách này thay cho `finally { if (r != null) r.close(); }` dài dòng và dễ sai.
+
+## Exception kèm dữ liệu
+
+```java
+class ValidationException extends RuntimeException {
+    private final Map<String, String> errors;   // field -> thông báo
+}
+```
+
+Handler chung chỉ cần đọc `errors()` là trả được `{"fieldErrors": {...}}` về cho FE hiển thị dưới từng ô input.
+%%% quiz
+? `catch (Exception e) { }` có vấn đề gì?
+* Lỗi bị nuốt mất, rất khó debug
+- Không có vấn đề
+- Chạy chậm hơn
+? try-with-resources gọi `close()` khi nào?
+- Chỉ khi không có lỗi
+* Luôn luôn, kể cả khi có exception
+- Khi GC chạy
+%%% hints
+- parseAge: kiểm tra null/blank trước, sau đó `Integer.parseInt` trong try/catch `NumberFormatException`.
+- register: dùng một `LinkedHashMap<String,String> errors`; validate từng trường, gom lỗi vào; cuối cùng nếu `!errors.isEmpty()` thì ném.
+- sumLines: `try (reader) { ... }` (Java 9+ cho phép dùng biến có sẵn), đếm số dòng bắt đầu từ 1, bỏ qua dòng trống.
+%%% starter
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+class ValidationException extends RuntimeException {
+    private final Map<String, String> errors;
+
+    ValidationException(Map<String, String> errors) {
+        super("Dữ liệu không hợp lệ: " + errors);
+        this.errors = Map.copyOf(errors);
+    }
+
+    ValidationException(String field, String message, Throwable cause) {
+        super(field + ": " + message, cause);
+        this.errors = Map.of(field, message);
+    }
+
+    Map<String, String> errors() { return errors; }
+}
+
+record User(String name, String email, int age) {
+}
+
+class Solution {
+    /** null/blank -> "bắt buộc"; không phải số -> "phải là số"; ngoài 0..150 -> "ngoài khoảng 0-150". Field: "age". */
+    static int parseAge(String raw) {
+        return 0; // TODO
+    }
+
+    /** Validate name (không trống), email (có dạng a@b.c), age; gom TẤT CẢ lỗi rồi ném một lần. */
+    static User register(Map<String, String> form) {
+        return null; // TODO
+    }
+
+    /** Cộng các số nguyên, mỗi dòng một số, bỏ dòng trống. Dòng sai -> ValidationException field "line N". Luôn đóng reader. */
+    static long sumLines(BufferedReader reader) {
+        return 0; // TODO
+    }
+}
+%%% tests
+import java.io.BufferedReader;
+import java.io.StringReader;
+import java.util.Map;
+
+class Tests {
+    static class TrackedReader extends BufferedReader {
+        boolean closed;
+
+        TrackedReader(String s) { super(new StringReader(s)); }
+
+        @Override
+        public void close() throws java.io.IOException {
+            closed = true;
+            super.close();
+        }
+    }
+
+    static void run(T t) {
+        t.test("parseAge hợp lệ (có khoảng trắng)", () -> T.eq(30, Solution.parseAge(" 30 ")));
+        t.test("parseAge rỗng", () -> {
+            ValidationException e = T.throwsEx(ValidationException.class, () -> Solution.parseAge("  "));
+            T.eq("bắt buộc", e.errors().get("age"));
+        });
+        t.test("parseAge không phải số, giữ cause", () -> {
+            ValidationException e = T.throwsEx(ValidationException.class, () -> Solution.parseAge("abc"));
+            T.eq("phải là số", e.errors().get("age"));
+            T.ok(e.getCause() instanceof NumberFormatException, "cause phải là NumberFormatException gốc");
+        });
+        t.test("parseAge ngoài khoảng", () -> {
+            ValidationException e = T.throwsEx(ValidationException.class, () -> Solution.parseAge("151"));
+            T.eq("ngoài khoảng 0-150", e.errors().get("age"));
+        });
+        t.test("register hợp lệ", () -> T.eq(new User("An", "an@x.vn", 20),
+                Solution.register(Map.of("name", "An", "email", "an@x.vn", "age", "20"))));
+        t.test("register gom đủ 3 lỗi", () -> {
+            ValidationException e = T.throwsEx(ValidationException.class,
+                    () -> Solution.register(Map.of("name", " ", "email", "sai-email", "age", "x")));
+            T.eq(3, e.errors().size());
+            T.ok(e.errors().containsKey("name") && e.errors().containsKey("email") && e.errors().containsKey("age"),
+                    "thiếu field lỗi: " + e.errors());
+        });
+        t.test("register thiếu field", () -> {
+            ValidationException e = T.throwsEx(ValidationException.class, () -> Solution.register(Map.of("name", "An")));
+            T.eq(2, e.errors().size());
+        });
+        t.test("sumLines cộng và đóng reader", () -> {
+            TrackedReader r = new TrackedReader("1\n\n2\n 3 \n");
+            T.eq(6L, Solution.sumLines(r));
+            T.ok(r.closed, "reader chưa được đóng");
+        });
+        t.test("sumLines lỗi vẫn đóng reader, báo đúng dòng", () -> {
+            TrackedReader r = new TrackedReader("1\nabc\n");
+            ValidationException e = T.throwsEx(ValidationException.class, () -> Solution.sumLines(r));
+            T.ok(e.errors().containsKey("line 2"), "phải báo 'line 2', nhận: " + e.errors());
+            T.ok(r.closed, "reader chưa được đóng khi có lỗi");
+        });
+    }
+}
+%%% solution
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+class ValidationException extends RuntimeException {
+    private final Map<String, String> errors;
+
+    ValidationException(Map<String, String> errors) {
+        super("Dữ liệu không hợp lệ: " + errors);
+        this.errors = Map.copyOf(errors);
+    }
+
+    ValidationException(String field, String message, Throwable cause) {
+        super(field + ": " + message, cause);
+        this.errors = Map.of(field, message);
+    }
+
+    Map<String, String> errors() { return errors; }
+}
+
+record User(String name, String email, int age) {
+}
+
+class Solution {
+    static int parseAge(String raw) {
+        if (raw == null || raw.isBlank()) throw new ValidationException(Map.of("age", "bắt buộc"));
+        int age;
+        try {
+            age = Integer.parseInt(raw.strip());
+        } catch (NumberFormatException e) {
+            throw new ValidationException("age", "phải là số", e);
+        }
+        if (age < 0 || age > 150) throw new ValidationException(Map.of("age", "ngoài khoảng 0-150"));
+        return age;
+    }
+
+    static User register(Map<String, String> form) {
+        Map<String, String> errors = new LinkedHashMap<>();
+        String name = form.get("name");
+        if (name == null || name.isBlank()) errors.put("name", "bắt buộc");
+        String email = form.get("email");
+        if (email == null || !email.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")) errors.put("email", "email không hợp lệ");
+        int age = 0;
+        try {
+            age = parseAge(form.get("age"));
+        } catch (ValidationException e) {
+            errors.putAll(e.errors());
+        }
+        if (!errors.isEmpty()) throw new ValidationException(errors);
+        return new User(name.strip(), email, age);
+    }
+
+    static long sumLines(BufferedReader reader) {
+        try (reader) {
+            long sum = 0;
+            int lineNo = 0;
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lineNo++;
+                if (line.isBlank()) continue;
+                try {
+                    sum += Long.parseLong(line.strip());
+                } catch (NumberFormatException e) {
+                    throw new ValidationException("line " + lineNo, "không phải số: " + line, e);
+                }
+            }
+            return sum;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+}

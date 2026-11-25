@@ -1,0 +1,313 @@
+%%% meta
+id: java-17
+title: Spring Boot — Dependency Injection và bean lifecycle (tự viết mini container)
+level: intermediate
+topic: Spring Boot 3.x
+order: 17
+%%% theory
+## IoC và Dependency Injection
+
+Theo cách viết thông thường, class **tự tạo** các phụ thuộc của nó: `new JdbcOrderRepository()`. Với **Inversion of Control**, việc tạo và nối object chuyển cho một **container**, ở Spring là `ApplicationContext`. Class chỉ **khai báo** nó cần gì.
+
+```java
+@Service
+class OrderService {
+    private final OrderRepository repo;          // interface
+    OrderService(OrderRepository repo) {         // constructor injection
+        this.repo = repo;
+    }
+}
+```
+
+Nên chọn **constructor injection** thay cho `@Autowired` trên field, vì:
+- Field có thể để `final`. Object được tạo ra là đã đầy đủ phụ thuộc.
+- Test chỉ cần `new OrderService(fakeRepo)`, không cần Spring.
+- Thiếu phụ thuộc thì lỗi ngay lúc khởi động. Constructor có quá nhiều tham số cũng là dấu hiệu class đang ôm quá nhiều việc.
+
+## Container làm gì khi khởi động
+
+1. **Quét** các class có `@Component`, `@Service`… và các method `@Bean` để tạo **bean definition**.
+2. Với mỗi bean: chọn constructor, **đệ quy** tạo các bean mà nó cần, rồi gọi constructor.
+3. Một tham số kiểu interface sẽ được nối với **bean duy nhất** cài đặt interface đó. Không có bean nào thì lỗi `NoSuchBeanDefinitionException`. Có nhiều bean thì lỗi `NoUniqueBeanDefinitionException`, trừ khi có `@Primary` hoặc `@Qualifier`.
+4. A cần B và B lại cần A gọi là **vòng lặp phụ thuộc**. Từ Spring Boot 2.6, ứng dụng sẽ không khởi động được (`BeanCurrentlyInCreationException`).
+
+## Scope và lifecycle
+
+- **singleton** (mặc định): mỗi container chỉ có một instance, dùng chung cho mọi request. Vì vậy bean **không được giữ state riêng của từng request**.
+- **prototype**: mỗi lần lấy là một instance mới. Ngoài ra còn `request`, `session`.
+
+Vòng đời của một singleton:
+
+```
+khởi tạo (constructor) → tiêm phụ thuộc → @PostConstruct / afterPropertiesSet()
+→ … chạy …
+→ context đóng → @PreDestroy / destroy(), theo thứ tự NGƯỢC lúc tạo
+```
+
+Thứ tự destroy phải ngược với lúc tạo. Ví dụ `Cache` phụ thuộc `DataSource` thì `Cache` phải đóng **trước**, vì lúc đóng nó có thể vẫn cần ghi xuống DB.
+
+## Bài tập
+
+Tự viết một `MiniContainer` để hiểu Spring làm gì bên trong. Container dùng reflection: `getDeclaredConstructors()`, `setAccessible(true)`, `newInstance(args)`.
+%%% quiz
+? Vì sao nên ưu tiên constructor injection?
+- Vì Spring chạy nhanh hơn
+* Vì field được để `final`, test được bằng `new` mà không cần Spring, và thiếu phụ thuộc thì lỗi ngay
+- Vì đó là cách duy nhất Spring hỗ trợ
+? Bean singleton có field `List<Item> currentCart` được ghi ở mỗi request. Chuyện gì xảy ra?
+- Không sao, mỗi request có một bean riêng
+* Mọi request dùng chung một list nên dữ liệu bị trộn lẫn và có race condition
+- Spring tự tạo bản sao cho từng thread
+? Có 2 bean cài đặt `PaymentGateway`, và một service cần inject `PaymentGateway`. Spring sẽ làm gì?
+- Chọn bean được khai báo trước
+- Inject cả hai vào
+* Báo lỗi NoUniqueBeanDefinitionException, trừ khi có @Primary hoặc @Qualifier
+? `Cache` phụ thuộc `DataSource`. Khi context đóng, thứ tự destroy đúng là gì?
+* `Cache` trước, `DataSource` sau
+- `DataSource` trước, `Cache` sau
+- Không xác định được
+%%% hints
+- Lưu `List<Class<?>> registered`, `Map<Class<?>, Object> instances` (singleton) và `List<Object> created` (thứ tự tạo để destroy ngược lại).
+- Tìm class cài đặt: lọc `registered` theo `type.isAssignableFrom(c)`. Không có thì ném `IllegalStateException("Không có bean cho " + type.getSimpleName())`, có nhiều hơn một thì cũng ném IllegalStateException.
+- Phát hiện vòng lặp: truyền theo một `Set<Class<?>> creating`. Nếu `add(impl)` trả `false` thì nghĩa là class đó đang được tạo dở, ném IllegalStateException có chữ "Vòng lặp".
+- Chọn constructor có nhiều tham số nhất, gọi `setAccessible(true)`, rồi resolve đệ quy từng `getParameterTypes()`.
+- Tạo xong thì nếu `bean instanceof Lifecycle l` gọi `l.init()`. Trong `close()` thì duyệt `created` từ cuối lên và gọi `destroy()`.
+%%% starter
+import java.lang.reflect.Constructor;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** Giống @PostConstruct / @PreDestroy. */
+interface Lifecycle {
+    default void init() {
+    }
+
+    default void destroy() {
+    }
+}
+
+class MiniContainer implements AutoCloseable {
+    private final List<Class<?>> registered = new ArrayList<>();
+
+    /** Đăng ký một class làm bean singleton. */
+    void register(Class<?> type) {
+        registered.add(type);
+    }
+
+    /**
+     * Lấy bean theo kiểu (class hoặc interface): tạo lười lần đầu, các lần sau trả lại đúng instance đó.
+     * Lỗi (thiếu bean, nhiều bean, vòng lặp phụ thuộc) → IllegalStateException.
+     */
+    <T> T get(Class<T> type) {
+        // TODO: tìm class đăng ký phù hợp → chọn constructor → tạo đệ quy các tham số → init()
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Gọi destroy() theo thứ tự NGƯỢC lúc tạo. */
+    @Override
+    public void close() {
+        // TODO
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+
+class Tests {
+    interface Repo {
+        String find();
+    }
+
+    static class MemRepo implements Repo {
+        public String find() { return "mem"; }
+    }
+
+    static class SqlRepo implements Repo {
+        public String find() { return "sql"; }
+    }
+
+    static class Service {
+        final Repo repo;
+
+        Service(Repo repo) { this.repo = repo; }
+    }
+
+    static class Controller {
+        final Service service;
+        final Repo repo;
+
+        Controller(Service service, Repo repo) {
+            this.service = service;
+            this.repo = repo;
+        }
+    }
+
+    static class A {
+        A(B b) {
+        }
+    }
+
+    static class B {
+        B(A a) {
+        }
+    }
+
+    static class NeedsRunnable {
+        NeedsRunnable(Runnable r) {
+        }
+    }
+
+    static final List<String> LOG = new ArrayList<>();
+
+    static class Db implements Lifecycle {
+        public void init() { LOG.add("init Db"); }
+
+        public void destroy() { LOG.add("destroy Db"); }
+    }
+
+    static class Cache implements Lifecycle {
+        final Db db;
+
+        Cache(Db db) { this.db = db; }
+
+        public void init() { LOG.add("init Cache"); }
+
+        public void destroy() { LOG.add("destroy Cache"); }
+    }
+
+    static void run(T t) {
+        t.test("constructor injection theo kiểu interface", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register(MemRepo.class);
+            c.register(Service.class);
+            T.eq("mem", c.get(Service.class).repo.find());
+            T.eq("mem", c.get(Repo.class).find());
+        });
+        t.test("singleton: luôn trả cùng một instance, phụ thuộc dùng chung", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register(Controller.class);
+            c.register(Service.class);
+            c.register(MemRepo.class);
+            Controller ctl = c.get(Controller.class);
+            T.ok(ctl == c.get(Controller.class), "get 2 lần phải ra cùng instance");
+            T.ok(ctl.service.repo == ctl.repo, "Repo phải là một instance dùng chung");
+        });
+        t.test("thiếu bean → IllegalStateException nêu tên kiểu", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register(NeedsRunnable.class);
+            IllegalStateException e = T.throwsEx(IllegalStateException.class, () -> c.get(NeedsRunnable.class));
+            T.ok(String.valueOf(e.getMessage()).contains("Runnable"), "message nên nêu kiểu bị thiếu: " + e.getMessage());
+        });
+        t.test("lấy class chưa đăng ký → IllegalStateException", () ->
+                T.throwsEx(IllegalStateException.class, () -> new MiniContainer().get(Service.class)));
+        t.test("nhiều bean cùng kiểu → IllegalStateException", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register(MemRepo.class);
+            c.register(SqlRepo.class);
+            c.register(Service.class);
+            T.throwsEx(IllegalStateException.class, () -> c.get(Service.class));
+        });
+        t.test("phát hiện vòng lặp phụ thuộc", () -> {
+            MiniContainer c = new MiniContainer();
+            c.register(A.class);
+            c.register(B.class);
+            IllegalStateException e = T.throwsEx(IllegalStateException.class, () -> c.get(A.class));
+            T.ok(String.valueOf(e.getMessage()).toLowerCase().contains("vòng lặp"), "message nên có chữ 'vòng lặp': " + e.getMessage());
+        });
+        t.test("init theo thứ tự phụ thuộc, destroy theo thứ tự ngược lại", () -> {
+            LOG.clear();
+            MiniContainer c = new MiniContainer();
+            c.register(Cache.class);
+            c.register(Db.class);
+            c.get(Cache.class);
+            c.get(Cache.class);
+            c.close();
+            T.eq(List.of("init Db", "init Cache", "destroy Cache", "destroy Db"), LOG);
+        });
+    }
+}
+%%% solution
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+interface Lifecycle {
+    default void init() {
+    }
+
+    default void destroy() {
+    }
+}
+
+class MiniContainer implements AutoCloseable {
+    private final List<Class<?>> registered = new ArrayList<>();
+    private final Map<Class<?>, Object> instances = new HashMap<>();
+    private final List<Object> created = new ArrayList<>();
+
+    void register(Class<?> type) {
+        registered.add(type);
+    }
+
+    <T> T get(Class<T> type) {
+        return type.cast(resolve(type, new LinkedHashSet<>()));
+    }
+
+    private Object resolve(Class<?> type, Set<Class<?>> creating) {
+        Class<?> impl = implFor(type);
+        Object existing = instances.get(impl);
+        if (existing != null) return existing;
+        if (!creating.add(impl)) {
+            throw new IllegalStateException("Vòng lặp phụ thuộc: " + creating.stream().map(Class::getSimpleName).toList()
+                    + " → " + impl.getSimpleName());
+        }
+        Constructor<?> ctor = impl.getDeclaredConstructors()[0];
+        for (Constructor<?> c : impl.getDeclaredConstructors()) {
+            if (c.getParameterCount() > ctor.getParameterCount()) ctor = c;
+        }
+        ctor.setAccessible(true);
+        Class<?>[] params = ctor.getParameterTypes();
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) args[i] = resolve(params[i], creating);
+        Object bean;
+        try {
+            bean = ctor.newInstance(args);
+        } catch (InvocationTargetException e) {
+            throw new IllegalStateException("Lỗi khi tạo " + impl.getSimpleName(), e.getCause());
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Không tạo được " + impl.getSimpleName(), e);
+        }
+        creating.remove(impl);
+        instances.put(impl, bean);
+        created.add(bean);
+        if (bean instanceof Lifecycle l) l.init();
+        return bean;
+    }
+
+    private Class<?> implFor(Class<?> type) {
+        List<Class<?>> candidates = registered.stream().filter(type::isAssignableFrom).toList();
+        if (candidates.isEmpty()) throw new IllegalStateException("Không có bean cho " + type.getSimpleName());
+        if (candidates.size() > 1) {
+            throw new IllegalStateException("Có nhiều bean cho " + type.getSimpleName() + ": "
+                    + candidates.stream().map(Class::getSimpleName).toList());
+        }
+        return candidates.get(0);
+    }
+
+    @Override
+    public void close() {
+        for (int i = created.size() - 1; i >= 0; i--) {
+            if (created.get(i) instanceof Lifecycle l) l.destroy();
+        }
+        created.clear();
+        instances.clear();
+    }
+}

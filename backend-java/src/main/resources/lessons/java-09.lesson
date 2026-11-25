@@ -1,0 +1,361 @@
+%%% meta
+id: java-09
+title: Thiết kế REST API — Controller / Service / Repository
+level: intermediate
+topic: Backend
+order: 9
+%%% theory
+## Phân tầng
+
+```
+HTTP ─▶ Controller ─▶ Service ─▶ Repository ─▶ DB
+        (route,        (nghiệp vụ,  (lưu/đọc)
+         DTO, status)   validate,
+                        transaction)
+```
+
+- **Controller** mỏng: đọc request, gọi service, trả status code. Không chứa nghiệp vụ.
+- **Service** giữ quy tắc nghiệp vụ ("sku không được trùng") và **ném exception có ý nghĩa**.
+- **Repository** chỉ biết lưu và đọc.
+- Một **handler chung** đổi exception thành HTTP status. Nhờ vậy service không cần biết HTTP là gì.
+
+## Status code phải đúng
+
+| Tình huống | Code |
+|---|---|
+| Đọc thành công | 200 |
+| Tạo mới (POST) | **201** + body là object vừa tạo |
+| Xoá thành công, không có body | **204** |
+| Dữ liệu gửi lên sai | **400** + chi tiết từng field |
+| Không tìm thấy | **404** |
+| Xung đột (trùng unique, sai version) | **409** |
+| Lỗi server không lường trước | 500 (không lộ stack trace) |
+
+## Thiết kế URL
+
+- Danh từ số nhiều: `/products`, `/products/{id}`. Hành động thể hiện qua method: GET/POST/PUT/DELETE.
+- `PUT` và `DELETE` là **idempotent**: gọi lại nhiều lần thì kết quả cuối vẫn như nhau. `POST` thì không.
+- Không để lộ entity DB ra ngoài; dùng DTO.
+
+Trong Spring, bài này tương ứng với `@RestController` + `@Service` + `JpaRepository` + `@RestControllerAdvice`. Ở đây ta tự viết bằng Java thuần để thấy rõ từng mảnh.
+%%% quiz
+? Tạo resource thành công bằng POST nên trả về gì?
+- 200 OK
+* 201 Created
+- 204 No Content
+? Tạo sản phẩm có sku đã tồn tại nên trả về gì?
+- 400
+- 404
+* 409
+? Logic "sku không được trùng" đặt ở tầng nào?
+- Controller
+* Service
+- Repository
+%%% hints
+- Service: `create` validate (sku, name không blank; price > 0), gom lỗi vào `ValidationException`, rồi kiểm tra trùng sku → `ConflictException`.
+- Api.handle: tách `path` bằng `split("/")`. `/products` sẽ thành `["", "products"]`, còn `/products/5` thành `["", "products", "5"]`.
+- Bọc toàn bộ routing trong `try { ... } catch (NotFoundException e) { return new Response(404, ...) } ...`.
+- id không phải số: bắt `NumberFormatException` → 400.
+%%% starter
+import java.util.*;
+
+record Request(String method, String path, Map<String, String> body) {
+}
+
+record Response(int status, Object body) {
+}
+
+record Product(long id, String sku, String name, long price) {
+}
+
+class NotFoundException extends RuntimeException {
+    NotFoundException(String m) { super(m); }
+}
+
+class ConflictException extends RuntimeException {
+    ConflictException(String m) { super(m); }
+}
+
+class ValidationException extends RuntimeException {
+    final Map<String, String> errors;
+
+    ValidationException(Map<String, String> errors) {
+        super("validation");
+        this.errors = errors;
+    }
+}
+
+/** Repository in-memory, đã viết sẵn. */
+class ProductRepository {
+    private final Map<Long, Product> rows = new TreeMap<>();
+    private long seq = 0;
+
+    List<Product> findAll() { return List.copyOf(rows.values()); }
+
+    Optional<Product> findById(long id) { return Optional.ofNullable(rows.get(id)); }
+
+    Optional<Product> findBySku(String sku) {
+        return rows.values().stream().filter(p -> p.sku().equals(sku)).findFirst();
+    }
+
+    Product insert(String sku, String name, long price) {
+        Product p = new Product(++seq, sku, name, price);
+        rows.put(p.id(), p);
+        return p;
+    }
+
+    Product update(Product p) {
+        rows.put(p.id(), p);
+        return p;
+    }
+
+    boolean delete(long id) { return rows.remove(id) != null; }
+}
+
+class ProductService {
+    private final ProductRepository repo;
+
+    ProductService(ProductRepository repo) { this.repo = repo; }
+
+    List<Product> list() { return repo.findAll(); }
+
+    Product get(long id) {
+        return null; // TODO: không có -> NotFoundException
+    }
+
+    Product create(Map<String, String> body) {
+        return null; // TODO: validate sku, name, price (> 0, là số); trùng sku -> ConflictException
+    }
+
+    Product update(long id, Map<String, String> body) {
+        return null; // TODO: đổi name, price; sku giữ nguyên
+    }
+
+    void delete(long id) {
+        // TODO: không có -> NotFoundException
+    }
+}
+
+class Api {
+    private final ProductService service;
+
+    Api(ProductService service) { this.service = service; }
+
+    Response handle(Request req) {
+        return new Response(404, Map.of("error", "Không có route")); // TODO
+    }
+}
+%%% tests
+import java.util.*;
+
+class Tests {
+    static Api api() { return new Api(new ProductService(new ProductRepository())); }
+
+    static Response post(Api a, String sku, String name, String price) {
+        Map<String, String> b = new HashMap<>();
+        if (sku != null) b.put("sku", sku);
+        if (name != null) b.put("name", name);
+        if (price != null) b.put("price", price);
+        return a.handle(new Request("POST", "/products", b));
+    }
+
+    static void run(T t) {
+        t.test("POST tạo mới -> 201 + product", () -> {
+            Response r = post(api(), "SKU-1", "Bàn phím", "500000");
+            T.eq(201, r.status());
+            T.eq(new Product(1, "SKU-1", "Bàn phím", 500000), r.body());
+        });
+        t.test("POST thiếu/sai dữ liệu -> 400 kèm lỗi từng field", () -> {
+            Response r = post(api(), " ", null, "-5");
+            T.eq(400, r.status());
+            @SuppressWarnings("unchecked") Map<String, String> errs = (Map<String, String>) r.body();
+            T.ok(errs.containsKey("sku") && errs.containsKey("name") && errs.containsKey("price"), "cần lỗi sku, name, price: " + errs);
+        });
+        t.test("POST price không phải số -> 400", () -> T.eq(400, post(api(), "A", "B", "abc").status()));
+        t.test("POST trùng sku -> 409", () -> {
+            Api a = api();
+            post(a, "SKU-1", "A", "1");
+            T.eq(409, post(a, "SKU-1", "B", "2").status());
+        });
+        t.test("GET /products -> 200 danh sách", () -> {
+            Api a = api();
+            post(a, "A", "a", "1");
+            post(a, "B", "b", "2");
+            Response r = a.handle(new Request("GET", "/products", Map.of()));
+            T.eq(200, r.status());
+            T.eq(2, ((List<?>) r.body()).size());
+        });
+        t.test("GET /products/{id}: 200, 404, id sai -> 400", () -> {
+            Api a = api();
+            post(a, "A", "a", "1");
+            T.eq(200, a.handle(new Request("GET", "/products/1", Map.of())).status());
+            T.eq(404, a.handle(new Request("GET", "/products/99", Map.of())).status());
+            T.eq(400, a.handle(new Request("GET", "/products/abc", Map.of())).status());
+        });
+        t.test("PUT cập nhật name/price, giữ sku", () -> {
+            Api a = api();
+            post(a, "A", "a", "1");
+            Response r = a.handle(new Request("PUT", "/products/1", Map.of("name", "mới", "price", "9", "sku", "HACK")));
+            T.eq(200, r.status());
+            T.eq(new Product(1, "A", "mới", 9), r.body());
+        });
+        t.test("PUT không tồn tại -> 404", () ->
+                T.eq(404, api().handle(new Request("PUT", "/products/7", Map.of("name", "x", "price", "1"))).status()));
+        t.test("DELETE -> 204, xoá lần 2 -> 404", () -> {
+            Api a = api();
+            post(a, "A", "a", "1");
+            Response r = a.handle(new Request("DELETE", "/products/1", Map.of()));
+            T.eq(204, r.status());
+            T.eq(null, r.body());
+            T.eq(404, a.handle(new Request("DELETE", "/products/1", Map.of())).status());
+        });
+        t.test("route lạ -> 404", () -> T.eq(404, api().handle(new Request("GET", "/users", Map.of())).status()));
+    }
+}
+%%% solution
+import java.util.*;
+
+record Request(String method, String path, Map<String, String> body) {
+}
+
+record Response(int status, Object body) {
+}
+
+record Product(long id, String sku, String name, long price) {
+}
+
+class NotFoundException extends RuntimeException {
+    NotFoundException(String m) { super(m); }
+}
+
+class ConflictException extends RuntimeException {
+    ConflictException(String m) { super(m); }
+}
+
+class ValidationException extends RuntimeException {
+    final Map<String, String> errors;
+
+    ValidationException(Map<String, String> errors) {
+        super("validation");
+        this.errors = errors;
+    }
+}
+
+class ProductRepository {
+    private final Map<Long, Product> rows = new TreeMap<>();
+    private long seq = 0;
+
+    List<Product> findAll() { return List.copyOf(rows.values()); }
+
+    Optional<Product> findById(long id) { return Optional.ofNullable(rows.get(id)); }
+
+    Optional<Product> findBySku(String sku) {
+        return rows.values().stream().filter(p -> p.sku().equals(sku)).findFirst();
+    }
+
+    Product insert(String sku, String name, long price) {
+        Product p = new Product(++seq, sku, name, price);
+        rows.put(p.id(), p);
+        return p;
+    }
+
+    Product update(Product p) {
+        rows.put(p.id(), p);
+        return p;
+    }
+
+    boolean delete(long id) { return rows.remove(id) != null; }
+}
+
+class ProductService {
+    private final ProductRepository repo;
+
+    ProductService(ProductRepository repo) { this.repo = repo; }
+
+    List<Product> list() { return repo.findAll(); }
+
+    Product get(long id) {
+        return repo.findById(id).orElseThrow(() -> new NotFoundException("Không có product " + id));
+    }
+
+    Product create(Map<String, String> body) {
+        Map<String, String> errors = new LinkedHashMap<>();
+        String sku = body.get("sku");
+        if (sku == null || sku.isBlank()) errors.put("sku", "bắt buộc");
+        String name = validName(body, errors);
+        long price = validPrice(body, errors);
+        if (!errors.isEmpty()) throw new ValidationException(errors);
+        if (repo.findBySku(sku).isPresent()) throw new ConflictException("sku đã tồn tại: " + sku);
+        return repo.insert(sku, name, price);
+    }
+
+    Product update(long id, Map<String, String> body) {
+        Product cur = get(id);
+        Map<String, String> errors = new LinkedHashMap<>();
+        String name = validName(body, errors);
+        long price = validPrice(body, errors);
+        if (!errors.isEmpty()) throw new ValidationException(errors);
+        return repo.update(new Product(cur.id(), cur.sku(), name, price));
+    }
+
+    void delete(long id) {
+        if (!repo.delete(id)) throw new NotFoundException("Không có product " + id);
+    }
+
+    private static String validName(Map<String, String> body, Map<String, String> errors) {
+        String name = body.get("name");
+        if (name == null || name.isBlank()) errors.put("name", "bắt buộc");
+        return name;
+    }
+
+    private static long validPrice(Map<String, String> body, Map<String, String> errors) {
+        try {
+            long price = Long.parseLong(body.getOrDefault("price", ""));
+            if (price <= 0) errors.put("price", "phải > 0");
+            return price;
+        } catch (NumberFormatException e) {
+            errors.put("price", "phải là số");
+            return 0;
+        }
+    }
+}
+
+class Api {
+    private final ProductService service;
+
+    Api(ProductService service) { this.service = service; }
+
+    Response handle(Request req) {
+        try {
+            String[] parts = req.path().split("/");
+            if (parts.length < 2 || !parts[1].equals("products") || parts.length > 3) return notFound("Không có route");
+            if (parts.length == 2) {
+                return switch (req.method()) {
+                    case "GET" -> new Response(200, service.list());
+                    case "POST" -> new Response(201, service.create(req.body()));
+                    default -> new Response(405, Map.of("error", "Method không hỗ trợ"));
+                };
+            }
+            long id = Long.parseLong(parts[2]);
+            return switch (req.method()) {
+                case "GET" -> new Response(200, service.get(id));
+                case "PUT" -> new Response(200, service.update(id, req.body()));
+                case "DELETE" -> {
+                    service.delete(id);
+                    yield new Response(204, null);
+                }
+                default -> new Response(405, Map.of("error", "Method không hỗ trợ"));
+            };
+        } catch (NumberFormatException e) {
+            return new Response(400, Map.of("error", "id phải là số"));
+        } catch (ValidationException e) {
+            return new Response(400, e.errors);
+        } catch (NotFoundException e) {
+            return notFound(e.getMessage());
+        } catch (ConflictException e) {
+            return new Response(409, Map.of("error", e.getMessage()));
+        }
+    }
+
+    private static Response notFound(String msg) { return new Response(404, Map.of("error", msg)); }
+}

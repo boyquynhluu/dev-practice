@@ -1,0 +1,151 @@
+%%% meta
+id: py-02
+title: list / dict / set và comprehension
+level: core
+topic: Cấu trúc dữ liệu
+order: 2
+%%% theory
+## Bốn cấu trúc cốt lõi
+
+| | Có thứ tự | Sửa được | Trùng | Tra cứu |
+|---|---|---|---|---|
+| `list` | ✔ | ✔ | ✔ | `x in list` O(n) |
+| `tuple` | ✔ | ✘ | ✔ | dùng làm key của dict được |
+| `set` | ✘ | ✔ | ✘ | `x in set` **O(1)** |
+| `dict` | ✔ (theo thứ tự thêm, từ 3.7) | ✔ | key duy nhất | `d[k]` O(1) |
+
+## Comprehension
+
+```python
+squares = [x * x for x in range(10) if x % 2 == 0]
+by_id   = {u["id"]: u for u in users}
+domains = {email.split("@")[1] for email in emails}
+total   = sum(o["amount"] for o in orders)        # generator expression, không tạo list
+```
+
+Comprehension lồng quá hai tầng thì khó đọc, lúc đó nên viết lại bằng vòng `for`.
+
+## Gom nhóm và đếm
+
+```python
+from collections import defaultdict, Counter
+
+groups = defaultdict(list)
+for w in words:
+    groups[len(w)].append(w)
+
+Counter("hello").most_common(2)     # [('l', 2), ('h', 1)]
+```
+
+## Sắp xếp theo nhiều tiêu chí
+
+```python
+sorted(items, key=lambda x: (-x["total"], x["name"]))   # total giảm dần, name tăng dần
+```
+
+## zip và unpacking
+
+```python
+list(zip(*[[1, 2, 3], [4, 5, 6]]))   # [(1, 4), (2, 5), (3, 6)] (chuyển vị)
+first, *rest = [1, 2, 3]             # first=1, rest=[2, 3]
+```
+%%% quiz
+? Muốn kiểm tra `x in ...` nhanh với 1 triệu phần tử, nên dùng gì?
+- list
+* set
+- tuple
+? `[x for x in range(5) if x % 2]` cho kết quả gì?
+- [0, 2, 4]
+* [1, 3]
+- [0, 1, 2, 3, 4]
+%%% hints
+- group_by_length: `defaultdict(list)`, rồi trả `dict(groups)`.
+- top_customers: cộng dồn vào dict trước, sau đó `sorted(totals, key=lambda c: (-totals[c], c))[:n]`.
+- transpose: `[list(row) for row in zip(*matrix)]`.
+%%% starter
+from collections import Counter, defaultdict
+
+
+def group_by_length(words: list[str]) -> dict[int, list[str]]:
+    """['hi', 'yo', 'abc'] -> {2: ['hi', 'yo'], 3: ['abc']} (giữ thứ tự xuất hiện)"""
+    return {}  # TODO
+
+
+def unique_tags(posts: list[dict]) -> list[str]:
+    """Gom mọi tag (viết thường, bỏ khoảng trắng thừa), không trùng, sắp xếp tăng dần."""
+    return []  # TODO
+
+
+def top_customers(orders: list[tuple[str, int]], n: int) -> list[str]:
+    """orders = [(tên, tiền), ...] -> n khách chi nhiều nhất; hoà thì theo tên."""
+    return []  # TODO
+
+
+def transpose(matrix: list[list[int]]) -> list[list[int]]:
+    return matrix  # TODO
+
+
+def char_freq(s: str, k: int) -> list[tuple[str, int]]:
+    """k chữ cái xuất hiện nhiều nhất (bỏ khoảng trắng, không phân biệt hoa thường); hoà thì theo chữ cái."""
+    return []  # TODO
+%%% tests
+from checker import test, eq
+from solution import *
+
+
+@test("group_by_length")
+def _():
+    eq({2: ["hi", "yo"], 3: ["abc"]}, group_by_length(["hi", "abc", "yo"]))
+    eq({}, group_by_length([]))
+
+
+@test("unique_tags")
+def _():
+    posts = [{"tags": ["Python", " api "]}, {"tags": ["python", "SQL"]}, {"tags": []}]
+    eq(["api", "python", "sql"], unique_tags(posts))
+
+
+@test("top_customers")
+def _():
+    orders = [("an", 100), ("binh", 300), ("an", 250), ("chi", 350), ("dung", 50)]
+    eq(["an", "chi"], top_customers(orders, 2))
+    eq(["an", "chi", "binh", "dung"], top_customers(orders, 10))
+
+
+@test("transpose")
+def _():
+    eq([[1, 4], [2, 5], [3, 6]], transpose([[1, 2, 3], [4, 5, 6]]))
+
+
+@test("char_freq")
+def _():
+    eq([("l", 3), ("o", 2)], char_freq("Hello World", 2))
+%%% solution
+from collections import Counter, defaultdict
+
+
+def group_by_length(words: list[str]) -> dict[int, list[str]]:
+    groups = defaultdict(list)
+    for w in words:
+        groups[len(w)].append(w)
+    return dict(groups)
+
+
+def unique_tags(posts: list[dict]) -> list[str]:
+    return sorted({t.strip().lower() for p in posts for t in p.get("tags", [])})
+
+
+def top_customers(orders: list[tuple[str, int]], n: int) -> list[str]:
+    totals: dict[str, int] = {}
+    for name, amount in orders:
+        totals[name] = totals.get(name, 0) + amount
+    return sorted(totals, key=lambda c: (-totals[c], c))[:n]
+
+
+def transpose(matrix: list[list[int]]) -> list[list[int]]:
+    return [list(row) for row in zip(*matrix)]
+
+
+def char_freq(s: str, k: int) -> list[tuple[str, int]]:
+    counts = Counter(c for c in s.lower() if not c.isspace())
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:k]

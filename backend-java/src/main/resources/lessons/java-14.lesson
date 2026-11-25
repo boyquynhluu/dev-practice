@@ -1,0 +1,221 @@
+%%% meta
+id: java-14
+title: Rate limiter — token bucket, clock giả để test
+level: advanced
+topic: Hệ thống
+order: 14
+%%% theory
+## Vì sao cần giới hạn tần suất
+
+Rate limit bảo vệ API khỏi brute-force đăng nhập, khỏi client viết lỗi gọi liên tục, và khỏi bị cào dữ liệu. Khi vượt giới hạn, API trả **429 Too Many Requests** kèm header `Retry-After`.
+
+## Token bucket
+
+- Xô chứa tối đa `capacity` token và được **nạp lại đều** `refillPerSecond` token mỗi giây.
+- Mỗi request lấy 1 token. Hết token thì request bị từ chối.
+- Thuật toán cho phép **burst** ngắn (tối đa bằng capacity) nhưng vẫn giữ đúng tốc độ trung bình.
+
+```
+tokens = min(capacity, tokens + (now - last) * rate)
+last   = now
+if tokens >= 1: tokens -= 1; allow
+else: deny, retryAfter = (1 - tokens) / rate
+```
+
+Không cần thread chạy nền để nạp token: chỉ cần **tính bù khi có request tới** (lazy refill).
+
+## Tiêm đồng hồ (inject clock) để test được
+
+Code gọi thẳng `System.currentTimeMillis()` thì muốn test phải `sleep` thật, vừa chậm vừa chập chờn. Hãy nhận đồng hồ qua constructor:
+
+```java
+TokenBucket(int capacity, double refillPerSecond, LongSupplier clockMillis)
+```
+
+Khi chạy thật thì truyền `System::currentTimeMillis`; trong test thì truyền một đồng hồ giả và tự "tua" thời gian. Trong Spring, cách tương đương là inject `java.time.Clock`.
+
+## Theo từng client
+
+Mỗi client (theo IP, user id hoặc API key) có một bucket riêng: `ConcurrentHashMap.computeIfAbsent(key, k -> new TokenBucket(...))`. Khi chạy nhiều instance thì dùng **Redis** để chia sẻ bộ đếm giữa các instance.
+%%% quiz
+? Vượt rate limit thì API nên trả status nào?
+- 403
+- 503
+* 429
+? Vì sao nên inject clock vào thay vì gọi trực tiếp `System.currentTimeMillis()`?
+* Để test có thể điều khiển thời gian, chạy nhanh và ổn định
+- Để chạy nhanh hơn khi chạy thật
+%%% hints
+- Lưu `double tokens` và `long lastMillis`. Viết hàm `refill()` để gọi ở đầu mỗi method.
+- `refill`: `elapsed = now - last; tokens = Math.min(capacity, tokens + elapsed * rate / 1000.0); last = now;`
+- `retryAfterMillis`: nếu `tokens >= 1` thì trả 0, ngược lại `(long) Math.ceil((1 - tokens) / rate * 1000)`.
+- Dùng `synchronized` cho các method của bucket.
+%%% starter
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
+
+class TokenBucket {
+    private final int capacity;
+    private final double refillPerSecond;
+    private final LongSupplier clock;
+
+    TokenBucket(int capacity, double refillPerSecond, LongSupplier clockMillis) {
+        // TODO: validate capacity > 0, refill > 0; xô bắt đầu ĐẦY
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.clock = clockMillis;
+    }
+
+    boolean tryAcquire() { return tryAcquire(1); }
+
+    boolean tryAcquire(int permits) {
+        return true; // TODO
+    }
+
+    /** Bao lâu nữa (ms) thì có 1 token; 0 nếu đang có. */
+    long retryAfterMillis() {
+        return 0; // TODO
+    }
+}
+
+class RateLimiter {
+    private final int capacity;
+    private final double refillPerSecond;
+    private final LongSupplier clock;
+
+    RateLimiter(int capacity, double refillPerSecond, LongSupplier clock) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.clock = clock;
+    }
+
+    /** Mỗi clientId một bucket riêng. */
+    boolean allow(String clientId) {
+        return true; // TODO
+    }
+}
+%%% tests
+class Tests {
+    static final class FakeClock implements java.util.function.LongSupplier {
+        long now = 1_000_000;
+
+        public long getAsLong() { return now; }
+
+        void advance(long ms) { now += ms; }
+    }
+
+    static void run(T t) {
+        t.test("burst tối đa bằng capacity", () -> {
+            TokenBucket b = new TokenBucket(3, 1, new FakeClock());
+            T.ok(b.tryAcquire() && b.tryAcquire() && b.tryAcquire(), "3 request đầu phải được phép");
+            T.ok(!b.tryAcquire(), "request thứ 4 phải bị chặn");
+        });
+        t.test("nạp lại theo thời gian", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(2, 2, c); // 2 token/giây
+            b.tryAcquire();
+            b.tryAcquire();
+            T.ok(!b.tryAcquire(), "hết token");
+            c.advance(500);  // +1 token
+            T.ok(b.tryAcquire(), "sau 500ms phải có 1 token");
+            T.ok(!b.tryAcquire(), "chỉ có 1 token");
+        });
+        t.test("không nạp vượt capacity", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(2, 10, c);
+            c.advance(60_000);
+            T.ok(b.tryAcquire(2), "lấy 2");
+            T.ok(!b.tryAcquire(), "không được có token thứ 3");
+        });
+        t.test("tryAcquire(n) không lấy một phần khi thiếu", () -> {
+            TokenBucket b = new TokenBucket(3, 1, new FakeClock());
+            T.ok(!b.tryAcquire(4), "4 > 3");
+            T.ok(b.tryAcquire(3), "vẫn còn đủ 3 token");
+        });
+        t.test("retryAfterMillis", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(1, 2, c); // 1 token mỗi 500ms
+            T.eq(0L, b.retryAfterMillis());
+            b.tryAcquire();
+            T.eq(500L, b.retryAfterMillis());
+            c.advance(200);
+            T.eq(300L, b.retryAfterMillis());
+        });
+        t.test("validate tham số", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> new TokenBucket(0, 1, () -> 0));
+            T.throwsEx(IllegalArgumentException.class, () -> new TokenBucket(1, 0, () -> 0));
+        });
+        t.test("RateLimiter: mỗi client một bucket", () -> {
+            FakeClock c = new FakeClock();
+            RateLimiter rl = new RateLimiter(2, 1, c);
+            T.ok(rl.allow("ip-1") && rl.allow("ip-1"), "ip-1 được 2 lần");
+            T.ok(!rl.allow("ip-1"), "ip-1 lần 3 bị chặn");
+            T.ok(rl.allow("ip-2"), "ip-2 không bị ảnh hưởng bởi ip-1");
+            c.advance(1000);
+            T.ok(rl.allow("ip-1"), "ip-1 sau 1s có lại 1 token");
+        });
+    }
+}
+%%% solution
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
+
+class TokenBucket {
+    private final int capacity;
+    private final double refillPerSecond;
+    private final LongSupplier clock;
+    private double tokens;
+    private long last;
+
+    TokenBucket(int capacity, double refillPerSecond, LongSupplier clockMillis) {
+        if (capacity <= 0) throw new IllegalArgumentException("capacity > 0");
+        if (refillPerSecond <= 0) throw new IllegalArgumentException("refillPerSecond > 0");
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.clock = clockMillis;
+        this.tokens = capacity;
+        this.last = clockMillis.getAsLong();
+    }
+
+    private void refill() {
+        long now = clock.getAsLong();
+        tokens = Math.min(capacity, tokens + (now - last) * refillPerSecond / 1000.0);
+        last = now;
+    }
+
+    boolean tryAcquire() { return tryAcquire(1); }
+
+    synchronized boolean tryAcquire(int permits) {
+        refill();
+        if (tokens >= permits) {
+            tokens -= permits;
+            return true;
+        }
+        return false;
+    }
+
+    synchronized long retryAfterMillis() {
+        refill();
+        if (tokens >= 1) return 0;
+        return (long) Math.ceil((1 - tokens) / refillPerSecond * 1000);
+    }
+}
+
+class RateLimiter {
+    private final int capacity;
+    private final double refillPerSecond;
+    private final LongSupplier clock;
+    private final Map<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+
+    RateLimiter(int capacity, double refillPerSecond, LongSupplier clock) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.clock = clock;
+    }
+
+    boolean allow(String clientId) {
+        return buckets.computeIfAbsent(clientId, k -> new TokenBucket(capacity, refillPerSecond, clock)).tryAcquire();
+    }
+}

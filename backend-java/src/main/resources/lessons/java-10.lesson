@@ -1,0 +1,250 @@
+%%% meta
+id: java-10
+title: JDBC, PreparedStatement và transaction
+level: intermediate
+topic: Database
+order: 10
+%%% theory
+## Bên dưới JPA là JDBC
+
+Spring Data JPA hay MyBatis đều chạy trên JDBC. Hiểu JDBC giúp bạn debug được connection pool, transaction và các câu SQL chậm.
+
+```java
+try (PreparedStatement ps = conn.prepareStatement(
+        "SELECT owner FROM accounts WHERE owner = ?")) {
+    ps.setString(1, owner);                 // tham số được bind, KHÔNG nối chuỗi
+    try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) list.add(rs.getString("owner"));
+    }
+}
+```
+
+## SQL injection
+
+```java
+"SELECT * FROM accounts WHERE owner = '" + owner + "'"   // ❌
+```
+
+Với `owner = "' OR '1'='1"`, câu trên trả về **toàn bộ bảng**. `PreparedStatement` gửi tham số tách riêng khỏi câu SQL, nên không bị lỗi này.
+
+## Transaction: tất cả hoặc không gì cả (ACID)
+
+Chuyển tiền gồm 2 câu UPDATE. Nếu câu thứ hai lỗi mà câu thứ nhất đã ghi, tiền sẽ "biến mất".
+
+```java
+conn.setAutoCommit(false);
+try {
+    // debit + credit
+    conn.commit();
+} catch (Exception e) {
+    conn.rollback();
+    throw e;
+} finally {
+    conn.setAutoCommit(true);
+}
+```
+
+Trong Spring, `@Transactional` làm đúng việc này cho bạn: commit nếu method chạy xong, rollback nếu có RuntimeException.
+
+## Chống race condition ngay trong SQL
+
+```sql
+UPDATE accounts SET balance = balance - ? WHERE id = ? AND balance >= ?
+```
+
+Kiểm tra số dòng bị ảnh hưởng (`executeUpdate()`). Nếu là 0 thì không đủ tiền. Cách này an toàn hơn kiểu "SELECT số dư rồi mới UPDATE", vì giữa hai câu đó một request khác có thể chen vào.
+
+## Batch
+
+`ps.addBatch()` + `ps.executeBatch()` gửi nhiều dòng trong một lần, nhanh hơn rất nhiều so với gọi từng câu một.
+%%% quiz
+? Vì sao `PreparedStatement` chống được SQL injection?
+* Tham số được gửi tách khỏi câu SQL, không bị hiểu là code SQL
+- Vì nó tự escape dấu nháy đơn
+- Vì nó chạy nhanh hơn
+? Trong `transfer`, nếu credit lỗi sau khi debit đã chạy thì phải làm gì?
+- commit
+* rollback
+- Không cần làm gì
+%%% hints
+- `balance`: `SELECT balance FROM accounts WHERE id = ?`; nếu `!rs.next()` thì ném `IllegalArgumentException`.
+- `transfer`: debit bằng câu UPDATE có điều kiện `balance >= ?`; nếu `executeUpdate() == 0` thì kiểm tra tài khoản có tồn tại không để chọn exception cho đúng.
+- Bắt `SQLException` rồi bọc thành `RuntimeException`, nhưng phải rollback trước.
+%%% starter
+import java.sql.*;
+import java.util.*;
+
+class InsufficientFundsException extends RuntimeException {
+    InsufficientFundsException(String m) { super(m); }
+}
+
+/** Bảng: accounts(id BIGINT PK AUTO, owner VARCHAR, balance BIGINT) */
+class Bank {
+    static long balance(Connection c, long id) throws SQLException {
+        return 0; // TODO; không có tài khoản -> IllegalArgumentException
+    }
+
+    /** Chuyển tiền trong một transaction. amount <= 0 -> IllegalArgumentException;
+     *  không đủ tiền -> InsufficientFundsException; tài khoản không tồn tại -> IllegalArgumentException. */
+    static void transfer(Connection c, long from, long to, long amount) throws SQLException {
+        // TODO
+    }
+
+    /** Tìm id theo owner, AN TOÀN với SQL injection, sắp xếp theo id. */
+    static List<Long> findByOwner(Connection c, String owner) throws SQLException {
+        return new ArrayList<>(); // TODO
+    }
+
+    /** Thêm nhiều tài khoản balance = 0 bằng batch; trả số dòng đã thêm. */
+    static int bulkInsert(Connection c, List<String> owners) throws SQLException {
+        return 0; // TODO
+    }
+}
+%%% tests
+import java.sql.*;
+import java.util.*;
+
+class Tests {
+    static int n = 0;
+
+    static Connection db() throws SQLException {
+        Connection c = DriverManager.getConnection("jdbc:h2:mem:bank" + (n++) + ";DB_CLOSE_DELAY=-1");
+        try (Statement s = c.createStatement()) {
+            s.execute("CREATE TABLE accounts(id BIGINT AUTO_INCREMENT PRIMARY KEY, owner VARCHAR(50) NOT NULL, balance BIGINT NOT NULL)");
+            s.execute("INSERT INTO accounts(owner, balance) VALUES ('an', 1000), ('binh', 500), ('an', 0)");
+        }
+        return c;
+    }
+
+    static void run(T t) {
+        t.test("balance", () -> {
+            try (Connection c = db()) {
+                T.eq(1000L, Bank.balance(c, 1));
+                T.throwsEx(IllegalArgumentException.class, () -> Bank.balance(c, 99));
+            }
+        });
+        t.test("transfer thành công", () -> {
+            try (Connection c = db()) {
+                Bank.transfer(c, 1, 2, 300);
+                T.eq(700L, Bank.balance(c, 1));
+                T.eq(800L, Bank.balance(c, 2));
+                T.ok(c.getAutoCommit(), "phải trả autoCommit về true sau khi xong");
+            }
+        });
+        t.test("không đủ tiền -> InsufficientFundsException, không đổi số dư", () -> {
+            try (Connection c = db()) {
+                T.throwsEx(InsufficientFundsException.class, () -> Bank.transfer(c, 2, 1, 501));
+                T.eq(500L, Bank.balance(c, 2));
+                T.eq(1000L, Bank.balance(c, 1));
+            }
+        });
+        t.test("tài khoản nhận không tồn tại -> rollback cả debit", () -> {
+            try (Connection c = db()) {
+                T.throwsEx(IllegalArgumentException.class, () -> Bank.transfer(c, 1, 99, 100));
+                T.eq(1000L, Bank.balance(c, 1));
+                T.ok(c.getAutoCommit(), "phải trả autoCommit về true kể cả khi lỗi");
+            }
+        });
+        t.test("amount <= 0", () -> {
+            try (Connection c = db()) {
+                T.throwsEx(IllegalArgumentException.class, () -> Bank.transfer(c, 1, 2, 0));
+            }
+        });
+        t.test("findByOwner", () -> {
+            try (Connection c = db()) {
+                T.eq(List.of(1L, 3L), Bank.findByOwner(c, "an"));
+            }
+        });
+        t.test("findByOwner chống SQL injection", () -> {
+            try (Connection c = db()) {
+                T.eq(List.of(), Bank.findByOwner(c, "' OR '1'='1"));
+            }
+        });
+        t.test("bulkInsert bằng batch", () -> {
+            try (Connection c = db()) {
+                T.eq(3, Bank.bulkInsert(c, List.of("x", "y", "z")));
+                T.eq(List.of(5L), Bank.findByOwner(c, "y"));
+                T.eq(0L, Bank.balance(c, 6));
+            }
+        });
+    }
+}
+%%% solution
+import java.sql.*;
+import java.util.*;
+
+class InsufficientFundsException extends RuntimeException {
+    InsufficientFundsException(String m) { super(m); }
+}
+
+class Bank {
+    static long balance(Connection c, long id) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT balance FROM accounts WHERE id = ?")) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) throw new IllegalArgumentException("Không có tài khoản " + id);
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    private static boolean exists(Connection c, long id) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM accounts WHERE id = ?")) {
+            ps.setLong(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    static void transfer(Connection c, long from, long to, long amount) throws SQLException {
+        if (amount <= 0) throw new IllegalArgumentException("amount phải > 0");
+        c.setAutoCommit(false);
+        try {
+            try (PreparedStatement debit = c.prepareStatement(
+                    "UPDATE accounts SET balance = balance - ? WHERE id = ? AND balance >= ?")) {
+                debit.setLong(1, amount);
+                debit.setLong(2, from);
+                debit.setLong(3, amount);
+                if (debit.executeUpdate() == 0) {
+                    if (!exists(c, from)) throw new IllegalArgumentException("Không có tài khoản " + from);
+                    throw new InsufficientFundsException("Không đủ tiền");
+                }
+            }
+            try (PreparedStatement credit = c.prepareStatement("UPDATE accounts SET balance = balance + ? WHERE id = ?")) {
+                credit.setLong(1, amount);
+                credit.setLong(2, to);
+                if (credit.executeUpdate() == 0) throw new IllegalArgumentException("Không có tài khoản " + to);
+            }
+            c.commit();
+        } catch (RuntimeException | SQLException e) {
+            c.rollback();
+            throw e;
+        } finally {
+            c.setAutoCommit(true);
+        }
+    }
+
+    static List<Long> findByOwner(Connection c, String owner) throws SQLException {
+        List<Long> ids = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT id FROM accounts WHERE owner = ? ORDER BY id")) {
+            ps.setString(1, owner);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) ids.add(rs.getLong(1));
+            }
+        }
+        return ids;
+    }
+
+    static int bulkInsert(Connection c, List<String> owners) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO accounts(owner, balance) VALUES (?, 0)")) {
+            for (String o : owners) {
+                ps.setString(1, o);
+                ps.addBatch();
+            }
+            int total = 0;
+            for (int r : ps.executeBatch()) total += r;
+            return total;
+        }
+    }
+}

@@ -1,0 +1,1114 @@
+[
+ {
+  "day": 1,
+  "plannedDate": "2026-11-17",
+  "week": 1,
+  "group": "Backend",
+  "tech": "Java 21",
+  "topic": "Records, sealed classes, pattern matching",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-16",
+   "java-08"
+  ]
+ },
+ {
+  "day": 2,
+  "plannedDate": "2026-11-18",
+  "week": 1,
+  "group": "Backend",
+  "tech": "Spring Boot 3.x",
+  "topic": "Dependency Injection và bean lifecycle",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-17",
+   "java-09"
+  ]
+ },
+ {
+  "day": 3,
+  "plannedDate": "2026-11-19",
+  "week": 1,
+  "group": "Backend",
+  "tech": "Spring Security",
+  "topic": "Security filter chain",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-18"
+  ]
+ },
+ {
+  "day": 4,
+  "plannedDate": "2026-11-20",
+  "week": 1,
+  "group": "Database",
+  "tech": "MySQL",
+  "topic": "Schema và normalization",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-19"
+  ]
+ },
+ {
+  "day": 5,
+  "plannedDate": "2026-11-21",
+  "week": 1,
+  "group": "Database",
+  "tech": "Redis",
+  "topic": "Data structures và TTL",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-20"
+  ]
+ },
+ {
+  "day": 6,
+  "plannedDate": "2026-11-22",
+  "week": 1,
+  "group": "Database",
+  "tech": "Transaction",
+  "topic": "ACID và isolation levels",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-21",
+   "java-10"
+  ]
+ },
+ {
+  "day": 7,
+  "plannedDate": "2026-11-23",
+  "week": 1,
+  "group": "Database",
+  "tech": "Indexing",
+  "topic": "B+Tree và clustered index",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-22"
+  ]
+ },
+ {
+  "day": 8,
+  "plannedDate": "2026-11-24",
+  "week": 2,
+  "group": "Architecture",
+  "tech": "Monolith",
+  "topic": "Modular monolith và module boundary",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-23"
+  ]
+ },
+ {
+  "day": 9,
+  "plannedDate": "2026-11-25",
+  "week": 2,
+  "group": "Architecture",
+  "tech": "Microservices",
+  "topic": "Service boundaries",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-24"
+  ]
+ },
+ {
+  "day": 10,
+  "plannedDate": "2026-11-26",
+  "week": 2,
+  "group": "Architecture",
+  "tech": "DDD",
+  "topic": "Bounded context",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-25"
+  ]
+ },
+ {
+  "day": 11,
+  "plannedDate": "2026-11-27",
+  "week": 2,
+  "group": "Architecture",
+  "tech": "Clean Architecture",
+  "topic": "Dependency rule",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-26"
+  ]
+ },
+ {
+  "day": 12,
+  "plannedDate": "2026-11-28",
+  "week": 2,
+  "group": "System Design",
+  "tech": "Scalability",
+  "topic": "Vertical vs horizontal scaling",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-27"
+  ]
+ },
+ {
+  "day": 13,
+  "plannedDate": "2026-11-29",
+  "week": 2,
+  "group": "System Design",
+  "tech": "High Availability",
+  "topic": "Health checks và failover",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-28"
+  ]
+ },
+ {
+  "day": 14,
+  "plannedDate": "2026-11-30",
+  "week": 2,
+  "group": "System Design",
+  "tech": "Distributed Systems",
+  "topic": "Network partitions",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-29"
+  ]
+ },
+ {
+  "day": 15,
+  "plannedDate": "2026-12-01",
+  "week": 3,
+  "group": "Messaging",
+  "tech": "Kafka",
+  "topic": "Consumer group và rebalancing",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-30"
+  ]
+ },
+ {
+  "day": 16,
+  "plannedDate": "2026-12-02",
+  "week": 3,
+  "group": "Messaging",
+  "tech": "Event-driven Architecture",
+  "topic": "Event schema evolution",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-31"
+  ]
+ },
+ {
+  "day": 17,
+  "plannedDate": "2026-12-03",
+  "week": 3,
+  "group": "DevOps",
+  "tech": "Docker",
+  "topic": "Images, layers và caching",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-32"
+  ]
+ },
+ {
+  "day": 18,
+  "plannedDate": "2026-12-04",
+  "week": 3,
+  "group": "DevOps",
+  "tech": "CI/CD",
+  "topic": "Static analysis",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-33"
+  ]
+ },
+ {
+  "day": 19,
+  "plannedDate": "2026-12-05",
+  "week": 3,
+  "group": "DevOps",
+  "tech": "AWS",
+  "topic": "EC2, security group và VPC",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-34"
+  ]
+ },
+ {
+  "day": 20,
+  "plannedDate": "2026-12-06",
+  "week": 3,
+  "group": "DevOps",
+  "tech": "Monitoring",
+  "topic": "Prometheus instrumentation",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-35"
+  ]
+ },
+ {
+  "day": 21,
+  "plannedDate": "2026-12-07",
+  "week": 3,
+  "group": "Engineering",
+  "tech": "Design Patterns",
+  "topic": "Factory Method",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-36"
+  ]
+ },
+ {
+  "day": 22,
+  "plannedDate": "2026-12-08",
+  "week": 4,
+  "group": "Engineering",
+  "tech": "Concurrency",
+  "topic": "synchronized và ReentrantLock",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-37",
+   "java-12"
+  ]
+ },
+ {
+  "day": 23,
+  "plannedDate": "2026-12-09",
+  "week": 4,
+  "group": "Engineering",
+  "tech": "Performance",
+  "topic": "JMH benchmarking basics",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-38"
+  ]
+ },
+ {
+  "day": 24,
+  "plannedDate": "2026-12-10",
+  "week": 4,
+  "group": "Engineering",
+  "tech": "Testing",
+  "topic": "Mockito và test doubles",
+  "method": "Hiểu & demo",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-39"
+  ]
+ },
+ {
+  "day": 25,
+  "plannedDate": "2026-12-11",
+  "week": 4,
+  "group": "Backend",
+  "tech": "Java 21",
+  "topic": "Generics và type erasure",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-16",
+   "java-06"
+  ]
+ },
+ {
+  "day": 26,
+  "plannedDate": "2026-12-12",
+  "week": 4,
+  "group": "Backend",
+  "tech": "Spring Boot 3.x",
+  "topic": "Spring Data JPA, N+1",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-17",
+   "java-10"
+  ]
+ },
+ {
+  "day": 27,
+  "plannedDate": "2026-12-13",
+  "week": 4,
+  "group": "Backend",
+  "tech": "Spring Security",
+  "topic": "RBAC và method security",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-18"
+  ]
+ },
+ {
+  "day": 28,
+  "plannedDate": "2026-12-14",
+  "week": 4,
+  "group": "Database",
+  "tech": "MySQL",
+  "topic": "JOIN, pagination và keyset",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-19"
+  ]
+ },
+ {
+  "day": 29,
+  "plannedDate": "2026-12-15",
+  "week": 5,
+  "group": "Database",
+  "tech": "Redis",
+  "topic": "Cache stampede",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-20",
+   "java-13"
+  ]
+ },
+ {
+  "day": 30,
+  "plannedDate": "2026-12-16",
+  "week": 5,
+  "group": "Database",
+  "tech": "Transaction",
+  "topic": "Optimistic locking",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-21",
+   "java-10"
+  ]
+ },
+ {
+  "day": 31,
+  "plannedDate": "2026-12-17",
+  "week": 5,
+  "group": "Database",
+  "tech": "Indexing",
+  "topic": "Covering index",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-22"
+  ]
+ },
+ {
+  "day": 32,
+  "plannedDate": "2026-12-18",
+  "week": 5,
+  "group": "Architecture",
+  "tech": "Monolith",
+  "topic": "Shared database trade-offs",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-23"
+  ]
+ },
+ {
+  "day": 33,
+  "plannedDate": "2026-12-19",
+  "week": 5,
+  "group": "Architecture",
+  "tech": "Microservices",
+  "topic": "Service discovery và gateway",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-24"
+  ]
+ },
+ {
+  "day": 34,
+  "plannedDate": "2026-12-20",
+  "week": 5,
+  "group": "Architecture",
+  "tech": "DDD",
+  "topic": "Aggregates và invariants",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-25"
+  ]
+ },
+ {
+  "day": 35,
+  "plannedDate": "2026-12-21",
+  "week": 5,
+  "group": "Architecture",
+  "tech": "Clean Architecture",
+  "topic": "Use case layer",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-26",
+   "java-09"
+  ]
+ },
+ {
+  "day": 36,
+  "plannedDate": "2026-12-22",
+  "week": 6,
+  "group": "System Design",
+  "tech": "Scalability",
+  "topic": "Stateless service",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-27"
+  ]
+ },
+ {
+  "day": 37,
+  "plannedDate": "2026-12-23",
+  "week": 6,
+  "group": "System Design",
+  "tech": "High Availability",
+  "topic": "Backup và restore drill",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-28"
+  ]
+ },
+ {
+  "day": 38,
+  "plannedDate": "2026-12-24",
+  "week": 6,
+  "group": "System Design",
+  "tech": "Distributed Systems",
+  "topic": "Idempotency và deduplication",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-29"
+  ]
+ },
+ {
+  "day": 39,
+  "plannedDate": "2026-12-25",
+  "week": 6,
+  "group": "Messaging",
+  "tech": "Kafka",
+  "topic": "Producer idempotence",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-30"
+  ]
+ },
+ {
+  "day": 40,
+  "plannedDate": "2026-12-26",
+  "week": 6,
+  "group": "Messaging",
+  "tech": "Event-driven Architecture",
+  "topic": "Eventual consistency",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-31"
+  ]
+ },
+ {
+  "day": 41,
+  "plannedDate": "2026-12-27",
+  "week": 6,
+  "group": "DevOps",
+  "tech": "Docker",
+  "topic": "Volumes và secrets",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-32"
+  ]
+ },
+ {
+  "day": 42,
+  "plannedDate": "2026-12-28",
+  "week": 6,
+  "group": "DevOps",
+  "tech": "CI/CD",
+  "topic": "Database migration in deployment",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-33"
+  ]
+ },
+ {
+  "day": 43,
+  "plannedDate": "2026-12-29",
+  "week": 7,
+  "group": "DevOps",
+  "tech": "AWS",
+  "topic": "S3 và presigned URLs",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-34"
+  ]
+ },
+ {
+  "day": 44,
+  "plannedDate": "2026-12-30",
+  "week": 7,
+  "group": "DevOps",
+  "tech": "Monitoring",
+  "topic": "Structured logging và correlation ID",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-35"
+  ]
+ },
+ {
+  "day": 45,
+  "plannedDate": "2026-12-31",
+  "week": 7,
+  "group": "Engineering",
+  "tech": "Design Patterns",
+  "topic": "Adapter",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-36"
+  ]
+ },
+ {
+  "day": 46,
+  "plannedDate": "2027-01-01",
+  "week": 7,
+  "group": "Engineering",
+  "tech": "Concurrency",
+  "topic": "Thread pools và backpressure",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-37",
+   "java-11"
+  ]
+ },
+ {
+  "day": 47,
+  "plannedDate": "2027-01-02",
+  "week": 7,
+  "group": "Engineering",
+  "tech": "Performance",
+  "topic": "Connection pool tuning",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-38"
+  ]
+ },
+ {
+  "day": 48,
+  "plannedDate": "2027-01-03",
+  "week": 7,
+  "group": "Engineering",
+  "tech": "Testing",
+  "topic": "Contract testing",
+  "method": "Code & test",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-39"
+  ]
+ },
+ {
+  "day": 49,
+  "plannedDate": "2027-01-04",
+  "week": 7,
+  "group": "Backend",
+  "tech": "Java 21",
+  "topic": "CompletableFuture và virtual threads",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-16",
+   "java-11"
+  ]
+ },
+ {
+  "day": 50,
+  "plannedDate": "2027-01-05",
+  "week": 8,
+  "group": "Backend",
+  "tech": "Spring Boot 3.x",
+  "topic": "Caching, configuration, Actuator",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-17",
+   "java-13"
+  ]
+ },
+ {
+  "day": 51,
+  "plannedDate": "2027-01-06",
+  "week": 8,
+  "group": "Backend",
+  "tech": "Spring Security",
+  "topic": "CSRF, CORS và cookie security",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-18"
+  ]
+ },
+ {
+  "day": 52,
+  "plannedDate": "2027-01-07",
+  "week": 8,
+  "group": "Database",
+  "tech": "MySQL",
+  "topic": "Replication và read replicas",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-19"
+  ]
+ },
+ {
+  "day": 53,
+  "plannedDate": "2027-01-08",
+  "week": 8,
+  "group": "Database",
+  "tech": "Redis",
+  "topic": "Rate limiter bằng Redis",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-20",
+   "java-14"
+  ]
+ },
+ {
+  "day": 54,
+  "plannedDate": "2027-01-09",
+  "week": 8,
+  "group": "Database",
+  "tech": "Transaction",
+  "topic": "Idempotency trong giao dịch",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-21",
+   "java-10"
+  ]
+ },
+ {
+  "day": 55,
+  "plannedDate": "2027-01-10",
+  "week": 8,
+  "group": "Database",
+  "tech": "Indexing",
+  "topic": "Index cho ORDER BY",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-22"
+  ]
+ },
+ {
+  "day": 56,
+  "plannedDate": "2027-01-11",
+  "week": 8,
+  "group": "Architecture",
+  "tech": "Monolith",
+  "topic": "Module integration testing",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-23"
+  ]
+ },
+ {
+  "day": 57,
+  "plannedDate": "2027-01-12",
+  "week": 9,
+  "group": "Architecture",
+  "tech": "Microservices",
+  "topic": "Data consistency giữa services",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-24"
+  ]
+ },
+ {
+  "day": 58,
+  "plannedDate": "2027-01-13",
+  "week": 9,
+  "group": "Architecture",
+  "tech": "DDD",
+  "topic": "Repositories và application services",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-25",
+   "java-09"
+  ]
+ },
+ {
+  "day": 59,
+  "plannedDate": "2027-01-14",
+  "week": 9,
+  "group": "Architecture",
+  "tech": "Clean Architecture",
+  "topic": "Testing core không cần framework",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-26"
+  ]
+ },
+ {
+  "day": 60,
+  "plannedDate": "2027-01-15",
+  "week": 9,
+  "group": "System Design",
+  "tech": "Scalability",
+  "topic": "Database sharding trade-offs",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-27"
+  ]
+ },
+ {
+  "day": 61,
+  "plannedDate": "2027-01-16",
+  "week": 9,
+  "group": "System Design",
+  "tech": "High Availability",
+  "topic": "Disaster recovery RPO/RTO",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-28"
+  ]
+ },
+ {
+  "day": 62,
+  "plannedDate": "2027-01-17",
+  "week": 9,
+  "group": "System Design",
+  "tech": "Distributed Systems",
+  "topic": "Clock, ordering và eventual consistency",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-29"
+  ]
+ },
+ {
+  "day": 63,
+  "plannedDate": "2027-01-18",
+  "week": 9,
+  "group": "Messaging",
+  "tech": "Kafka",
+  "topic": "Consumer lag monitoring",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-30"
+  ]
+ },
+ {
+  "day": 64,
+  "plannedDate": "2027-01-19",
+  "week": 10,
+  "group": "Messaging",
+  "tech": "Event-driven Architecture",
+  "topic": "Event-driven integration tests",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-31"
+  ]
+ },
+ {
+  "day": 65,
+  "plannedDate": "2027-01-20",
+  "week": 10,
+  "group": "DevOps",
+  "tech": "Docker",
+  "topic": "Debug container production",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-32"
+  ]
+ },
+ {
+  "day": 66,
+  "plannedDate": "2027-01-21",
+  "week": 10,
+  "group": "DevOps",
+  "tech": "CI/CD",
+  "topic": "Pipeline security scanning",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-33"
+  ]
+ },
+ {
+  "day": 67,
+  "plannedDate": "2027-01-22",
+  "week": 10,
+  "group": "DevOps",
+  "tech": "AWS",
+  "topic": "AWS cost và architecture review",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-34"
+  ]
+ },
+ {
+  "day": 68,
+  "plannedDate": "2027-01-23",
+  "week": 10,
+  "group": "DevOps",
+  "tech": "Monitoring",
+  "topic": "Alerting và SLO burn rate",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-35"
+  ]
+ },
+ {
+  "day": 69,
+  "plannedDate": "2027-01-24",
+  "week": 10,
+  "group": "Engineering",
+  "tech": "Design Patterns",
+  "topic": "Circuit Breaker pattern",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-36",
+   "java-15"
+  ]
+ },
+ {
+  "day": 70,
+  "plannedDate": "2027-01-25",
+  "week": 10,
+  "group": "Engineering",
+  "tech": "Concurrency",
+  "topic": "Concurrent wallet stress test",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-37",
+   "java-12"
+  ]
+ },
+ {
+  "day": 71,
+  "plannedDate": "2027-01-26",
+  "week": 11,
+  "group": "Engineering",
+  "tech": "Performance",
+  "topic": "Find and fix bottleneck",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-38"
+  ]
+ },
+ {
+  "day": 72,
+  "plannedDate": "2027-01-27",
+  "week": 11,
+  "group": "Engineering",
+  "tech": "Testing",
+  "topic": "Test pyramid và flaky tests",
+  "method": "Production scenario",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-39"
+  ]
+ },
+ {
+  "day": 73,
+  "plannedDate": "2027-01-28",
+  "week": 11,
+  "group": "Backend",
+  "tech": "Java 21",
+  "topic": "Records, sealed classes, pattern matching",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-16",
+   "java-08"
+  ]
+ },
+ {
+  "day": 74,
+  "plannedDate": "2027-01-29",
+  "week": 11,
+  "group": "Backend",
+  "tech": "Spring Boot 3.x",
+  "topic": "Dependency Injection và bean lifecycle",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-17",
+   "java-09"
+  ]
+ },
+ {
+  "day": 75,
+  "plannedDate": "2027-01-30",
+  "week": 11,
+  "group": "Backend",
+  "tech": "Spring Security",
+  "topic": "Security filter chain",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-18"
+  ]
+ },
+ {
+  "day": 76,
+  "plannedDate": "2027-01-31",
+  "week": 11,
+  "group": "Database",
+  "tech": "MySQL",
+  "topic": "Schema và normalization",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-19"
+  ]
+ },
+ {
+  "day": 77,
+  "plannedDate": "2027-02-01",
+  "week": 11,
+  "group": "Database",
+  "tech": "Redis",
+  "topic": "Data structures và TTL",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-20"
+  ]
+ },
+ {
+  "day": 78,
+  "plannedDate": "2027-02-02",
+  "week": 12,
+  "group": "Database",
+  "tech": "Transaction",
+  "topic": "ACID và isolation levels",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-21",
+   "java-10"
+  ]
+ },
+ {
+  "day": 79,
+  "plannedDate": "2027-02-03",
+  "week": 12,
+  "group": "Database",
+  "tech": "Indexing",
+  "topic": "B+Tree và clustered index",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-22"
+  ]
+ },
+ {
+  "day": 80,
+  "plannedDate": "2027-02-04",
+  "week": 12,
+  "group": "Architecture",
+  "tech": "Monolith",
+  "topic": "Modular monolith và module boundary",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-23"
+  ]
+ },
+ {
+  "day": 81,
+  "plannedDate": "2027-02-05",
+  "week": 12,
+  "group": "Architecture",
+  "tech": "Microservices",
+  "topic": "Service boundaries",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-24"
+  ]
+ },
+ {
+  "day": 82,
+  "plannedDate": "2027-02-06",
+  "week": 12,
+  "group": "Architecture",
+  "tech": "DDD",
+  "topic": "Bounded context",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-25"
+  ]
+ },
+ {
+  "day": 83,
+  "plannedDate": "2027-02-07",
+  "week": 12,
+  "group": "Architecture",
+  "tech": "Clean Architecture",
+  "topic": "Dependency rule",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-26"
+  ]
+ },
+ {
+  "day": 84,
+  "plannedDate": "2027-02-08",
+  "week": 12,
+  "group": "System Design",
+  "tech": "Scalability",
+  "topic": "Vertical vs horizontal scaling",
+  "method": "Review & tối ưu",
+  "plannedMinutes": 60,
+  "lessons": [
+   "java-27"
+  ]
+ }
+]

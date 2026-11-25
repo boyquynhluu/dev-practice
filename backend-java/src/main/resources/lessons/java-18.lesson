@@ -1,0 +1,307 @@
+%%% meta
+id: java-18
+title: Spring Security — Security filter chain, 401 và 403
+level: intermediate
+topic: Spring Security
+order: 18
+%%% theory
+## Request đi qua những đâu
+
+Spring Security không nằm trong controller. Nó là một **chuỗi Servlet Filter** đứng trước `DispatcherServlet`:
+
+```
+HTTP request
+ → DelegatingFilterProxy → FilterChainProxy
+     → SecurityFilterChain: [ CorsFilter → CsrfFilter → BearerTokenAuthenticationFilter
+                              → ExceptionTranslationFilter → AuthorizationFilter ]
+ → DispatcherServlet → Controller
+```
+
+- Mỗi filter có thể **cho đi tiếp** (`chain.doFilter(req, res)`) hoặc **chặn lại và tự trả response**. Chặn như vậy gọi là short-circuit.
+- **Thứ tự filter rất quan trọng.** Filter xác thực phải chạy trước filter phân quyền. Ở bước phân quyền, request phải được biết là của ai.
+- Kết quả xác thực được để trong `SecurityContextHolder`, tức `Authentication` gồm principal và authorities. Các filter sau và controller đọc từ đó.
+
+## Xác thực (authentication) và phân quyền (authorization)
+
+| | Câu hỏi | Lỗi khi không đạt |
+|---|---|---|
+| **Authentication** | Bạn là ai? | **401 Unauthorized**: thiếu token, hoặc token sai hay hết hạn |
+| **Authorization** | Bạn có được làm việc này không? | **403 Forbidden**: đã đăng nhập nhưng không đủ quyền |
+
+Với API stateless dùng JWT: filter đọc header `Authorization: Bearer <token>`. Token **hợp lệ** thì filter đặt principal vào context. Token **có gửi nhưng sai** thì trả 401 ngay. **Không có token** thì request đi tiếp dưới dạng anonymous, và để quy tắc phân quyền quyết định.
+
+## Quy tắc phân quyền
+
+```java
+http.authorizeHttpRequests(auth -> auth
+        .requestMatchers("/public/**").permitAll()
+        .requestMatchers("/admin/reports/**").hasRole("AUDITOR")
+        .requestMatchers("/admin/**").hasRole("ADMIN")
+        .anyRequest().authenticated());
+```
+
+- Các quy tắc được xét **từ trên xuống**, và **quy tắc khớp đầu tiên** được dùng. Vì vậy quy tắc cụ thể phải đặt **trước** quy tắc chung. Nếu `/admin/**` nằm trên thì không bao giờ xét tới `/admin/reports/**`.
+- Nên có `anyRequest().authenticated()` ở cuối (**deny by default**). Một endpoint mới mà quên khai báo quy tắc cũng không bị lộ ra.
+
+## Bài tập
+
+Tự viết một filter chain thu nhỏ: `FilterChain` chạy các filter theo thứ tự, `BearerAuthFilter` xác thực bằng token, còn `AuthorizationFilter` áp dụng quy tắc theo kiểu "quy tắc khớp đầu tiên".
+%%% quiz
+? User đã đăng nhập gọi `/admin/users` nhưng không có role ADMIN. Status đúng là gì?
+- 401
+* 403
+- 404
+> 401 nghĩa là chưa xác thực được bạn là ai. 403 nghĩa là đã biết bạn là ai nhưng bạn không có quyền.
+? Vì sao filter xác thực phải chạy trước filter phân quyền?
+* Vì phân quyền cần biết principal, mà principal do filter xác thực đặt vào SecurityContext
+- Vì Spring sắp xếp filter theo bảng chữ cái
+- Thứ tự không quan trọng
+? Quy tắc `/admin/**` hasRole ADMIN đặt TRƯỚC `/admin/reports/**` hasRole AUDITOR. User AUDITOR gọi `/admin/reports/1` sẽ nhận gì?
+- 200, vì quy tắc cụ thể hơn được ưu tiên
+* 403, vì quy tắc khớp đầu tiên là `/admin/**`
+- 401
+? Lợi ích của `anyRequest().authenticated()` ở cuối danh sách là gì?
+* Endpoint mới quên khai báo quy tắc vẫn bị yêu cầu đăng nhập (deny by default)
+- Giúp ứng dụng chạy nhanh hơn
+- Cho phép mọi request
+%%% hints
+- `FilterChain.handle`: viết hàm đệ quy `proceed(i, req, ctx)`. Nếu `i == filters.size()` thì gọi handler, ngược lại gọi `filters.get(i).doFilter(req, ctx, (r, c) -> proceed(i + 1, r, c))`.
+- `BearerAuthFilter`: nếu header `Authorization` là null thì cho đi tiếp. Nếu header không bắt đầu bằng `"Bearer "` hoặc token không có trong map thì trả `new Response(401, ...)`. Token đúng thì gán `ctx.principal = p` rồi cho đi tiếp.
+- `AuthorizationFilter`: tìm quy tắc **đầu tiên** có `req.path().startsWith(rule.pathPrefix())`. Nếu đó là permitAll (`role == null`) thì cho đi. Không thì principal null → 401, có quy tắc mà thiếu role → 403. Không khớp quy tắc nào thì chỉ cần đã đăng nhập.
+%%% starter
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+record Request(String path, Map<String, String> headers) {
+    String header(String name) { return headers.get(name); }
+}
+
+record Response(int status, String body) {
+}
+
+record Principal(String name, Set<String> roles) {
+}
+
+/** principal == null nghĩa là anonymous. */
+final class SecurityContext {
+    Principal principal;
+}
+
+interface Chain {
+    Response proceed(Request req, SecurityContext ctx);
+}
+
+interface Filter {
+    Response doFilter(Request req, SecurityContext ctx, Chain next);
+}
+
+interface Handler {
+    Response handle(Request req, SecurityContext ctx);
+}
+
+/** role == null: permitAll. */
+record Rule(String pathPrefix, String role) {
+    static Rule permitAll(String prefix) { return new Rule(prefix, null); }
+
+    static Rule hasRole(String prefix, String role) { return new Rule(prefix, role); }
+}
+
+class FilterChain {
+    private final List<Filter> filters;
+    private final Handler handler;
+
+    FilterChain(List<Filter> filters, Handler handler) {
+        this.filters = filters;
+        this.handler = handler;
+    }
+
+    /** Chạy các filter theo thứ tự, mỗi request một SecurityContext mới, cuối cùng mới tới handler. */
+    Response handle(Request req) {
+        return handler.handle(req, new SecurityContext()); // TODO: đang bỏ qua mọi filter
+    }
+}
+
+class BearerAuthFilter implements Filter {
+    private final Map<String, Principal> tokens;
+
+    BearerAuthFilter(Map<String, Principal> tokens) { this.tokens = tokens; }
+
+    @Override
+    public Response doFilter(Request req, SecurityContext ctx, Chain next) {
+        // TODO: không có header → đi tiếp (anonymous); header sai/token lạ → 401; đúng → đặt principal
+        return next.proceed(req, ctx);
+    }
+}
+
+class AuthorizationFilter implements Filter {
+    private final List<Rule> rules;
+
+    AuthorizationFilter(List<Rule> rules) { this.rules = rules; }
+
+    @Override
+    public Response doFilter(Request req, SecurityContext ctx, Chain next) {
+        // TODO: quy tắc khớp đầu tiên; permitAll; chưa đăng nhập → 401; thiếu role → 403;
+        //       không khớp quy tắc nào → chỉ cần đăng nhập
+        return next.proceed(req, ctx);
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+class Tests {
+    static Request req(String path, String token) {
+        return new Request(path, token == null ? Map.of() : Map.of("Authorization", "Bearer " + token));
+    }
+
+    static FilterChain app() {
+        Map<String, Principal> tokens = Map.of(
+                "t-alice", new Principal("alice", Set.of("USER")),
+                "t-root", new Principal("root", Set.of("USER", "ADMIN")),
+                "t-aud", new Principal("aud", Set.of("AUDITOR")));
+        List<Rule> rules = List.of(
+                Rule.permitAll("/public"),
+                Rule.hasRole("/admin/reports", "AUDITOR"),
+                Rule.hasRole("/admin", "ADMIN"));
+        return new FilterChain(List.of(new BearerAuthFilter(tokens), new AuthorizationFilter(rules)),
+                (r, ctx) -> new Response(200, ctx.principal == null ? "anonymous" : ctx.principal.name()));
+    }
+
+    static void run(T t) {
+        t.test("filter chạy theo thứ tự rồi mới tới handler", () -> {
+            List<String> log = new ArrayList<>();
+            Filter f1 = (r, c, next) -> { log.add("f1"); return next.proceed(r, c); };
+            Filter f2 = (r, c, next) -> { log.add("f2"); return next.proceed(r, c); };
+            new FilterChain(List.of(f1, f2), (r, c) -> { log.add("handler"); return new Response(200, ""); })
+                    .handle(req("/x", null));
+            T.eq(List.of("f1", "f2", "handler"), log);
+        });
+        t.test("filter có thể chặn sớm, handler không được gọi", () -> {
+            List<String> log = new ArrayList<>();
+            Filter block = (r, c, next) -> new Response(418, "stop");
+            Response res = new FilterChain(List.of(block), (r, c) -> { log.add("handler"); return new Response(200, ""); })
+                    .handle(req("/x", null));
+            T.eq(418, res.status());
+            T.eq(List.of(), log);
+        });
+        t.test("token hợp lệ → handler thấy principal", () -> {
+            Response res = app().handle(req("/orders", "t-alice"));
+            T.eq(200, res.status());
+            T.eq("alice", res.body());
+        });
+        t.test("token sai hoặc sai kiểu header → 401", () -> {
+            T.eq(401, app().handle(req("/public/home", "nope")).status());
+            T.eq(401, app().handle(new Request("/orders", Map.of("Authorization", "Basic abc"))).status());
+        });
+        t.test("permitAll không cần đăng nhập", () -> {
+            Response res = app().handle(req("/public/home", null));
+            T.eq(200, res.status());
+            T.eq("anonymous", res.body());
+        });
+        t.test("route cần quyền mà chưa đăng nhập → 401", () ->
+                T.eq(401, app().handle(req("/admin/users", null)).status()));
+        t.test("đã đăng nhập nhưng thiếu role → 403", () ->
+                T.eq(403, app().handle(req("/admin/users", "t-alice")).status()));
+        t.test("đủ role → 200", () ->
+                T.eq(200, app().handle(req("/admin/users", "t-root")).status()));
+        t.test("quy tắc khớp đầu tiên được áp dụng", () -> {
+            T.eq("AUDITOR vào /admin/reports", 200, app().handle(req("/admin/reports/q1", "t-aud")).status());
+            T.eq("AUDITOR vào /admin/users", 403, app().handle(req("/admin/users", "t-aud")).status());
+        });
+        t.test("không khớp quy tắc nào → mặc định yêu cầu đăng nhập", () -> {
+            T.eq(401, app().handle(req("/orders", null)).status());
+            T.eq(200, app().handle(req("/orders", "t-alice")).status());
+        });
+    }
+}
+%%% solution
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+record Request(String path, Map<String, String> headers) {
+    String header(String name) { return headers.get(name); }
+}
+
+record Response(int status, String body) {
+}
+
+record Principal(String name, Set<String> roles) {
+}
+
+final class SecurityContext {
+    Principal principal;
+}
+
+interface Chain {
+    Response proceed(Request req, SecurityContext ctx);
+}
+
+interface Filter {
+    Response doFilter(Request req, SecurityContext ctx, Chain next);
+}
+
+interface Handler {
+    Response handle(Request req, SecurityContext ctx);
+}
+
+record Rule(String pathPrefix, String role) {
+    static Rule permitAll(String prefix) { return new Rule(prefix, null); }
+
+    static Rule hasRole(String prefix, String role) { return new Rule(prefix, role); }
+}
+
+class FilterChain {
+    private final List<Filter> filters;
+    private final Handler handler;
+
+    FilterChain(List<Filter> filters, Handler handler) {
+        this.filters = List.copyOf(filters);
+        this.handler = handler;
+    }
+
+    Response handle(Request req) {
+        return proceed(0, req, new SecurityContext());
+    }
+
+    private Response proceed(int i, Request req, SecurityContext ctx) {
+        if (i == filters.size()) return handler.handle(req, ctx);
+        return filters.get(i).doFilter(req, ctx, (r, c) -> proceed(i + 1, r, c));
+    }
+}
+
+class BearerAuthFilter implements Filter {
+    private final Map<String, Principal> tokens;
+
+    BearerAuthFilter(Map<String, Principal> tokens) { this.tokens = tokens; }
+
+    @Override
+    public Response doFilter(Request req, SecurityContext ctx, Chain next) {
+        String header = req.header("Authorization");
+        if (header != null) {
+            if (!header.startsWith("Bearer ")) return new Response(401, "Sai kiểu xác thực");
+            Principal p = tokens.get(header.substring("Bearer ".length()).trim());
+            if (p == null) return new Response(401, "Token không hợp lệ");
+            ctx.principal = p;
+        }
+        return next.proceed(req, ctx);
+    }
+}
+
+class AuthorizationFilter implements Filter {
+    private final List<Rule> rules;
+
+    AuthorizationFilter(List<Rule> rules) { this.rules = rules; }
+
+    @Override
+    public Response doFilter(Request req, SecurityContext ctx, Chain next) {
+        Rule rule = rules.stream().filter(r -> req.path().startsWith(r.pathPrefix())).findFirst().orElse(null);
+        if (rule != null && rule.role() == null) return next.proceed(req, ctx);
+        if (ctx.principal == null) return new Response(401, "Cần đăng nhập");
+        if (rule != null && !ctx.principal.roles().contains(rule.role())) return new Response(403, "Không đủ quyền");
+        return next.proceed(req, ctx);
+    }
+}

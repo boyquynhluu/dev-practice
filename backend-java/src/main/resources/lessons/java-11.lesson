@@ -1,0 +1,198 @@
+%%% meta
+id: java-11
+title: Concurrency — ExecutorService và CompletableFuture
+level: advanced
+topic: Concurrency
+order: 11
+%%% theory
+## Vì sao backend cần chạy song song
+
+Một API phải gọi 3 service ngoài, mỗi service mất 300ms. Gọi tuần tự hết **900ms**, gọi song song chỉ khoảng **300ms**. Ứng dụng thật hay dùng kiểu này: tổng hợp báo giá, dashboard, fan-out.
+
+## ExecutorService
+
+```java
+ExecutorService pool = Executors.newFixedThreadPool(4);
+try {
+    List<Future<Long>> fs = pool.invokeAll(tasks);   // chạy song song, đợi tất cả
+    for (Future<Long> f : fs) results.add(f.get());
+} finally {
+    pool.shutdown();                                 // QUAN TRỌNG: không là rò rỉ thread
+}
+```
+
+Không dùng `new Thread()` cho mỗi request; hãy dùng pool có giới hạn. Java 21 có thêm **virtual threads**: `Executors.newVirtualThreadPerTaskExecutor()`. Chúng rất rẻ, nên hợp với việc chờ I/O.
+
+## CompletableFuture: ghép các bước bất đồng bộ
+
+```java
+CompletableFuture<Long> f = CompletableFuture
+    .supplyAsync(() -> callSupplier(), pool)
+    .completeOnTimeout(null, 200, TimeUnit.MILLISECONDS) // quá giờ -> null
+    .exceptionally(ex -> null);                          // lỗi -> null
+
+CompletableFuture.allOf(futures).join();                 // đợi tất cả
+```
+
+- `thenApply` biến đổi kết quả, `thenCompose` nối thêm một bước async, `thenCombine` gộp hai future.
+- **Luôn đặt timeout** khi gọi service ngoài. Nếu không, một service treo sẽ kéo treo cả hệ thống.
+
+## Retry
+
+Lỗi mạng thường chỉ thoáng qua. Thử lại vài lần là đủ, **nhưng chỉ với thao tác idempotent**: không tự động retry một yêu cầu "trừ tiền" mà không có idempotency key.
+%%% quiz
+? Quên `pool.shutdown()` thì sao?
+- Không sao cả
+* Thread của pool còn sống, JVM có thể không thoát và bị rò rỉ tài nguyên
+- Lỗi biên dịch
+? Vì sao phải đặt timeout khi gọi service ngoài?
+* Để một service chậm hoặc treo không kéo treo cả hệ thống
+- Để chạy nhanh hơn khi service bình thường
+%%% hints
+- fetchAll: `pool.invokeAll(tasks)`, sau đó gọi `f.get()` theo đúng thứ tự.
+- bestPrice: tạo `ExecutorService` riêng, mỗi supplier là một `supplyAsync(...).completeOnTimeout(null, ...).exceptionally(e -> null)`; `join` tất cả, lọc null, rồi `min`. Nhớ `shutdownNow()` trong finally.
+- withRetry: vòng `for` từ 1 đến maxAttempts, catch Exception rồi lưu lại `last`; hết lượt thì ném `new RuntimeException("...", last)`.
+%%% starter
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Supplier;
+
+class Solution {
+    /** Chạy song song trên pool, trả kết quả ĐÚNG THỨ TỰ task. */
+    static List<Long> fetchAll(List<Callable<Long>> tasks, ExecutorService pool) throws Exception {
+        List<Long> out = new ArrayList<>();
+        for (Callable<Long> t : tasks) out.add(t.call()); // TODO: đang chạy tuần tự!
+        return out;
+    }
+
+    /** Gọi song song mọi nhà cung cấp; bỏ qua cái lỗi hoặc quá timeout; trả giá thấp nhất. */
+    static OptionalLong bestPrice(List<Supplier<Long>> suppliers, Duration timeout) {
+        return OptionalLong.empty(); // TODO
+    }
+
+    /** Thử tối đa maxAttempts lần. Hết lượt -> RuntimeException có cause là lỗi cuối. */
+    static <T> T withRetry(Callable<T> task, int maxAttempts) {
+        return null; // TODO
+    }
+}
+%%% tests
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+
+class Tests {
+    static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    static void run(T t) {
+        t.test("fetchAll đúng thứ tự", () -> {
+            ExecutorService pool = Executors.newFixedThreadPool(3);
+            try {
+                List<Callable<Long>> tasks = List.of(() -> { sleep(150); return 1L; }, () -> 2L, () -> { sleep(50); return 3L; });
+                T.eq(List.of(1L, 2L, 3L), Solution.fetchAll(tasks, pool));
+            } finally {
+                pool.shutdown();
+            }
+        });
+        t.test("fetchAll chạy song song (4 x 300ms < 800ms)", () -> {
+            ExecutorService pool = Executors.newFixedThreadPool(4);
+            try {
+                List<Callable<Long>> tasks = new ArrayList<>();
+                for (long i = 0; i < 4; i++) {
+                    long v = i;
+                    tasks.add(() -> { sleep(300); return v; });
+                }
+                long start = System.nanoTime();
+                Solution.fetchAll(tasks, pool);
+                long ms = (System.nanoTime() - start) / 1_000_000;
+                T.ok(ms < 800, "mất " + ms + "ms, có vẻ vẫn chạy tuần tự");
+            } finally {
+                pool.shutdown();
+            }
+        });
+        t.test("bestPrice lấy min", () -> {
+            List<Supplier<Long>> s = List.of(() -> 300L, () -> 100L, () -> 200L);
+            T.eq(OptionalLong.of(100), Solution.bestPrice(s, Duration.ofSeconds(1)));
+        });
+        t.test("bestPrice bỏ qua nhà cung cấp lỗi và chậm", () -> {
+            List<Supplier<Long>> s = List.of(
+                    () -> { throw new IllegalStateException("down"); },
+                    () -> { sleep(2000); return 1L; },
+                    () -> { sleep(50); return 500L; });
+            long start = System.nanoTime();
+            OptionalLong r = Solution.bestPrice(s, Duration.ofMillis(300));
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            T.eq(OptionalLong.of(500), r);
+            T.ok(ms < 1500, "phải trả về sau khoảng timeout, nhưng mất " + ms + "ms");
+        });
+        t.test("bestPrice tất cả lỗi -> empty", () ->
+                T.eq(OptionalLong.empty(), Solution.bestPrice(List.of(() -> { throw new RuntimeException(); }), Duration.ofMillis(200))));
+        t.test("withRetry thành công ở lần 3", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            String r = Solution.withRetry(() -> {
+                if (calls.incrementAndGet() < 3) throw new java.io.IOException("mạng chập chờn");
+                return "ok";
+            }, 5);
+            T.eq("ok", r);
+            T.eq(3, calls.get());
+        });
+        t.test("withRetry hết lượt -> RuntimeException có cause", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            RuntimeException e = T.throwsEx(RuntimeException.class, () -> Solution.withRetry(() -> {
+                calls.incrementAndGet();
+                throw new java.io.IOException("lần " + calls.get());
+            }, 3));
+            T.eq(3, calls.get());
+            T.ok(e.getCause() instanceof java.io.IOException, "cause phải là lỗi gốc");
+            T.eq("lần 3", e.getCause().getMessage());
+        });
+    }
+}
+%%% solution
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Supplier;
+
+class Solution {
+    static List<Long> fetchAll(List<Callable<Long>> tasks, ExecutorService pool) throws Exception {
+        List<Long> out = new ArrayList<>();
+        for (Future<Long> f : pool.invokeAll(tasks)) out.add(f.get());
+        return out;
+    }
+
+    static OptionalLong bestPrice(List<Supplier<Long>> suppliers, Duration timeout) {
+        ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, suppliers.size()));
+        try {
+            List<CompletableFuture<Long>> fs = suppliers.stream()
+                    .map(s -> CompletableFuture.supplyAsync(s, pool)
+                            .completeOnTimeout(null, timeout.toMillis(), TimeUnit.MILLISECONDS)
+                            .exceptionally(e -> null))
+                    .toList();
+            return fs.stream().map(CompletableFuture::join).filter(Objects::nonNull)
+                    .mapToLong(Long::longValue).min();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    static <T> T withRetry(Callable<T> task, int maxAttempts) {
+        Exception last = null;
+        for (int i = 1; i <= maxAttempts; i++) {
+            try {
+                return task.call();
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        throw new RuntimeException("Thất bại sau " + maxAttempts + " lần", last);
+    }
+}

@@ -1,0 +1,190 @@
+%%% meta
+id: fe-08
+title: fetch, HTTP status và xử lý lỗi API
+level: intermediate
+topic: Gọi API
+order: 8
+%%% theory
+## fetch **không** reject khi gặp lỗi HTTP
+
+```js
+const res = await fetch('/api/users/1');
+res.ok;        // true khi status 200–299
+res.status;    // 404, 500…
+await res.json();
+```
+
+`fetch` chỉ reject khi **lỗi mạng** (mất kết nối, CORS, bị abort). Với **404 hoặc 500** thì nó vẫn resolve bình thường. Vì vậy **luôn phải kiểm tra `res.ok`**.
+
+## Một HTTP client nhỏ cho cả dự án
+
+Mọi lời gọi API nên đi qua một hàm chung, để:
+
+- ném `HttpError` mang theo `status` và body lỗi từ server (`message`, `fieldErrors`);
+- tự bóc lớp vỏ response `{ success, data }`;
+- xử lý đúng `204 No Content` (không có body, không gọi `res.json()`);
+- thêm header chung (`Content-Type`, `Authorization`).
+
+```js
+class HttpError extends Error {
+  constructor(status, message, body) { super(message); this.status = status; this.body = body; }
+}
+```
+
+Nhờ vậy UI chỉ cần viết `catch (e) { if (e.status === 404) ... }`.
+
+## Query string
+
+```js
+const qs = new URLSearchParams({ q: 'áo thun', page: 2 }).toString(); // q=%C3%A1o+thun&page=2
+```
+
+Không ghép tay `?q=${q}`: ký tự đặc biệt như `&` hay `#` sẽ làm hỏng URL.
+
+## Timeout và huỷ bằng AbortController
+
+```js
+const ctrl = new AbortController();
+const t = setTimeout(() => ctrl.abort(), 5000);
+await fetch(url, { signal: ctrl.signal });   // bị huỷ thì ném AbortError
+clearTimeout(t);
+```
+
+Trình duyệt hiện đại có sẵn `AbortSignal.timeout(ms)`.
+%%% quiz
+? Server trả về 500 thì `fetch` sẽ…
+- reject
+* resolve, `res.ok === false`
+? Response 204 thì làm gì với body?
+- res.json()
+* Không đọc body, trả về null
+%%% hints
+- api: `const res = await fetch(url, { method, headers, body: body && JSON.stringify(body), signal })`.
+- Nếu `res.status === 204` thì trả `null`. Ngược lại đọc `await res.json().catch(() => null)`.
+- Nếu `!res.ok` thì `throw new HttpError(res.status, data?.message ?? \`HTTP ${res.status}\`, data)`.
+- Nếu `data` có dạng `{ success, data }` thì trả về `data.data`.
+- Timeout: tạo `AbortController` và `setTimeout(() => ctrl.abort(), timeoutMs)`, dọn timer trong `finally`. Bắt `AbortError` rồi ném `new HttpError(0, 'Timeout')`.
+%%% starter
+class HttpError extends Error {
+  constructor(status, message, body = null) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/** buildUrl('/api/products', { q: 'áo & quần', page: 2, empty: undefined }) -> '/api/products?q=...&page=2' (bỏ undefined/null) */
+function buildUrl(path, params = {}) {
+  return path; // TODO
+}
+
+/**
+ * api(method, url, { body, timeoutMs }):
+ *  - gửi JSON (Content-Type) khi có body
+ *  - !res.ok -> HttpError(status, message từ server hoặc "HTTP <status>", body)
+ *  - 204 -> null; vỏ { success, data } -> data
+ *  - quá timeoutMs -> HttpError(0, 'Timeout')
+ */
+async function api(method, url, { body, timeoutMs = 5000 } = {}) {
+  const res = await fetch(url, { method });
+  return res.json(); // TODO
+}
+%%% tests
+test('buildUrl mã hoá đúng, bỏ giá trị rỗng', () => {
+  expect(buildUrl('/api/p', { q: 'áo & quần', page: 2, x: undefined, y: null }))
+    .toBe('/api/p?q=%C3%A1o+%26+qu%E1%BA%A7n&page=2');
+  expect(buildUrl('/api/p')).toBe('/api/p');
+});
+
+test('GET bóc vỏ { success, data }', async () => {
+  mockFetch(() => ({ body: { success: true, data: [{ id: 1 }] } }));
+  expect(await api('GET', '/api/users')).toEqual([{ id: 1 }]);
+});
+
+test('GET không có vỏ trả nguyên body', async () => {
+  mockFetch(() => ({ body: { id: 7 } }));
+  expect(await api('GET', '/x')).toEqual({ id: 7 });
+});
+
+test('POST gửi JSON body + header', async () => {
+  const calls = mockFetch(() => ({ status: 201, body: { id: 9 } }));
+  await api('POST', '/api/users', { body: { name: 'An' } });
+  expect(calls[0].opts.method).toBe('POST');
+  expect(calls[0].opts.body).toBe('{"name":"An"}');
+  expect(calls[0].opts.headers['Content-Type']).toBe('application/json');
+});
+
+test('404 -> HttpError có status và message từ server', async () => {
+  mockFetch(() => ({ status: 404, body: { message: 'Không có user 5' } }));
+  try {
+    await api('GET', '/api/users/5');
+    throw new Error('phải ném lỗi');
+  } catch (e) {
+    expect(e).toBeInstanceOf(HttpError);
+    expect(e.status).toBe(404);
+    expect(e.message).toBe('Không có user 5');
+  }
+});
+
+test('400 giữ body (fieldErrors)', async () => {
+  mockFetch(() => ({ status: 400, body: { message: 'Dữ liệu không hợp lệ', fieldErrors: { email: 'sai' } } }));
+  const e = await api('POST', '/x', { body: {} }).catch((err) => err);
+  expect(e.body.fieldErrors).toEqual({ email: 'sai' });
+});
+
+test('500 không có body JSON -> message mặc định', async () => {
+  mockFetch(() => ({ status: 500 }));
+  const e = await api('GET', '/x').catch((err) => err);
+  expect(e.status).toBe(500);
+  expect(e.message).toBe('HTTP 500');
+});
+
+test('204 -> null, không đọc json', async () => {
+  mockFetch(() => ({ status: 204 }));
+  expect(await api('DELETE', '/api/users/1')).toBeNull();
+});
+
+test('timeout -> HttpError(0, "Timeout")', async () => {
+  mockFetch(() => ({ body: { ok: 1 }, delay: 500 }));
+  const e = await api('GET', '/slow', { timeoutMs: 30 }).catch((err) => err);
+  expect(e).toBeInstanceOf(HttpError);
+  expect(e.status).toBe(0);
+  expect(e.message).toBe('Timeout');
+});
+%%% solution
+class HttpError extends Error {
+  constructor(status, message, body = null) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function buildUrl(path, params = {}) {
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null);
+  const qs = new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+async function api(method, url, { body, timeoutMs = 5000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new HttpError(0, 'Timeout');
+    throw new HttpError(0, 'Lỗi mạng');
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new HttpError(res.status, data?.message ?? `HTTP ${res.status}`, data);
+  return data && typeof data === 'object' && 'success' in data ? data.data : data;
+}

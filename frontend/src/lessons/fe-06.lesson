@@ -1,0 +1,202 @@
+%%% meta
+id: fe-06
+title: Promise và async/await — tuần tự, song song, timeout, retry
+level: intermediate
+topic: Bất đồng bộ
+order: 6
+%%% theory
+## Promise
+
+Một promise có ba trạng thái: **pending → fulfilled | rejected**. Đã chuyển sang fulfilled hoặc rejected rồi thì không đổi được nữa.
+
+```js
+const p = new Promise((resolve, reject) => setTimeout(() => resolve(42), 100));
+p.then((v) => ...).catch((e) => ...).finally(() => ...);
+```
+
+## async/await
+
+```js
+async function loadUser(id) {
+  try {
+    const user = await api.getUser(id);     // chờ, không chặn trình duyệt
+    return user.name;                        // hàm async luôn trả về Promise
+  } catch (e) {
+    ...
+  }
+}
+```
+
+## Tuần tự và song song
+
+```js
+// ❌ 3 request chạy tuần tự: tổng thời gian = a + b + c
+const a = await getA(); const b = await getB(); const c = await getC();
+
+// ✔ chạy song song: tổng thời gian ≈ max(a, b, c)
+const [a, b, c] = await Promise.all([getA(), getB(), getC()]);
+```
+
+| Hàm | Kết thúc khi |
+|---|---|
+| `Promise.all` | tất cả thành công, hoặc **một cái lỗi là reject ngay** |
+| `Promise.allSettled` | tất cả xong, trả về `{status, value \| reason}` cho từng cái |
+| `Promise.race` | cái **đầu tiên** xong (thành công hoặc lỗi) |
+| `Promise.any` | cái đầu tiên **thành công** |
+
+## Timeout bằng race
+
+```js
+const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms));
+await Promise.race([fetchData(), timeout(3000)]);
+```
+
+## Lỗi hay gặp
+
+- Quên `await`: nhận về một Promise thay vì giá trị, và lỗi bên trong bị "trôi" mất.
+- `array.forEach(async ...)` **không chờ** các callback chạy xong. Dùng `for...of` kết hợp `await` (tuần tự) hoặc `Promise.all(array.map(...))` (song song).
+%%% quiz
+? `Promise.all([a, b])` khi b bị reject thì sao?
+* Reject ngay với lỗi của b
+- Chờ a xong rồi mới reject
+- Trả về [a, undefined]
+? `items.forEach(async (x) => await save(x))` có chờ save xong không?
+- Có
+* Không
+%%% hints
+- withTimeout: `Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))])`.
+- retry: vòng `for` với `try { return await fn() } catch (e) { last = e; await sleep(delay) }`.
+- settleAll: `Promise.allSettled`, rồi gom vào `ok` và `failed`.
+- mapSeries: `for (const x of items) out.push(await fn(x))`.
+%%% starter
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Reject Error('Timeout') nếu promise chưa xong sau ms */
+async function withTimeout(promise, ms) {
+  return promise; // TODO
+}
+
+/** Thử fn() tối đa `times` lần, nghỉ `delay` ms giữa các lần; hết lượt ném lỗi cuối */
+async function retry(fn, times = 3, delay = 10) {
+  return fn(); // TODO
+}
+
+/** Chạy SONG SONG mọi loader, trả { ok: [giá trị...], failed: [message...] } giữ thứ tự */
+async function settleAll(loaders) {
+  return { ok: [], failed: [] }; // TODO
+}
+
+/** Chạy fn lần lượt từng phần tử (tuần tự), trả mảng kết quả */
+async function mapSeries(items, fn) {
+  const out = [];
+  items.forEach(async (x) => out.push(await fn(x))); // TODO: không chờ!
+  return out;
+}
+
+/** Tải user và orders SONG SONG: { user, orders } */
+async function loadDashboard(api) {
+  const user = await api.getUser();
+  const orders = await api.getOrders(); // TODO: đang tuần tự
+  return { user, orders };
+}
+%%% tests
+test('withTimeout: xong kịp', async () => {
+  expect(await withTimeout(wait(10).then(() => 'ok'), 200)).toBe('ok');
+});
+
+test('withTimeout: quá giờ', async () => {
+  await expect(withTimeout(wait(300), 30)).rejects.toThrow('Timeout');
+});
+
+test('retry thành công ở lần 3', async () => {
+  let n = 0;
+  const r = await retry(async () => {
+    n++;
+    if (n < 3) throw new Error(`lỗi ${n}`);
+    return 'done';
+  }, 5, 1);
+  expect(r).toBe('done');
+  expect(n).toBe(3);
+});
+
+test('retry hết lượt ném lỗi cuối', async () => {
+  let n = 0;
+  await expect(retry(async () => { n++; throw new Error(`lỗi ${n}`); }, 2, 1)).rejects.toThrow('lỗi 2');
+  expect(n).toBe(2);
+});
+
+test('settleAll gom kết quả và lỗi', async () => {
+  const r = await settleAll([() => wait(5).then(() => 1), () => Promise.reject(new Error('down')), async () => 3]);
+  expect(r).toEqual({ ok: [1, 3], failed: ['down'] });
+});
+
+test('settleAll chạy song song', async () => {
+  const start = Date.now();
+  await settleAll([() => wait(100), () => wait(100), () => wait(100)]);
+  expect(Date.now() - start).toBeLessThan(250);
+});
+
+test('mapSeries chờ từng phần tử, đúng thứ tự', async () => {
+  const log = [];
+  const r = await mapSeries([30, 10, 20], async (ms) => {
+    log.push(`start ${ms}`);
+    await wait(ms);
+    log.push(`end ${ms}`);
+    return ms * 2;
+  });
+  expect(r).toEqual([60, 20, 40]);
+  expect(log).toEqual(['start 30', 'end 30', 'start 10', 'end 10', 'start 20', 'end 20']);
+});
+
+test('loadDashboard song song', async () => {
+  const api = { getUser: () => wait(100).then(() => 'an'), getOrders: () => wait(100).then(() => [1]) };
+  const start = Date.now();
+  expect(await loadDashboard(api)).toEqual({ user: 'an', orders: [1] });
+  expect(Date.now() - start).toBeLessThan(180);
+});
+%%% solution
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Timeout')), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function retry(fn, times = 3, delay = 10) {
+  let last;
+  for (let i = 0; i < times; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      if (i < times - 1) await wait(delay);
+    }
+  }
+  throw last;
+}
+
+async function settleAll(loaders) {
+  const results = await Promise.allSettled(loaders.map((load) => load()));
+  return {
+    ok: results.filter((r) => r.status === 'fulfilled').map((r) => r.value),
+    failed: results.filter((r) => r.status === 'rejected').map((r) => r.reason?.message ?? String(r.reason)),
+  };
+}
+
+async function mapSeries(items, fn) {
+  const out = [];
+  for (const x of items) out.push(await fn(x));
+  return out;
+}
+
+async function loadDashboard(api) {
+  const [user, orders] = await Promise.all([api.getUser(), api.getOrders()]);
+  return { user, orders };
+}

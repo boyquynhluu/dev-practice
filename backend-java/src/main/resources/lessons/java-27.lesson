@@ -1,0 +1,83 @@
+%%% meta
+id: java-27
+title: Scalability — Scale dọc, scale ngang và stateless service
+level: advanced
+topic: Scalability
+order: 27
+%%% theory
+## Hai hướng scale
+
+| | Vertical (scale up) | Horizontal (scale out) |
+|---|---|---|
+| Cách làm | Máy to hơn: thêm CPU, RAM, SSD nhanh hơn | Thêm nhiều máy hoặc instance chạy song song |
+| Ưu điểm | Không phải sửa code, không có lỗi phân tán | Gần như không có trần, có dư thừa nên chịu lỗi tốt |
+| Nhược điểm | Có trần, giá tăng phi tuyến, vẫn là **một điểm lỗi duy nhất** | Ứng dụng phải **stateless**, cần load balancer, dữ liệu phức tạp hơn |
+
+Thực tế thường làm cả hai: scale dọc cho DB (vì khó scale ngang), scale ngang cho tầng ứng dụng.
+
+## Stateless service: điều kiện để scale ngang
+
+Instance nào cũng phải xử lý được **bất kỳ** request nào. Vì vậy **không được** giữ state cục bộ:
+
+| State | Đưa đi đâu |
+|---|---|
+| Session đăng nhập | JWT stateless, hoặc Spring Session lưu trên Redis |
+| File người dùng upload | Object storage (S3), không ghi vào ổ đĩa local |
+| Cache cục bộ cần nhất quán | Redis, hoặc chấp nhận cache local có TTL ngắn |
+| Job `@Scheduled` | Khoá phân tán (ShedLock) để chỉ một instance chạy |
+| Bộ đếm rate limit | Redis |
+
+**Sticky session** (load balancer luôn gửi một user tới cùng một instance) là cách chữa cháy. Instance đó chết thì mất session, và tải chia không đều.
+
+## Load balancing
+
+Các thuật toán: round-robin, least-connections, hash theo key. Load balancer **chỉ gửi request tới instance đang khoẻ**, dựa vào readiness check. Ví dụ: Nginx, HAProxy, AWS ALB, Service của Kubernetes.
+
+## Scale tầng dữ liệu
+
+Tầng dữ liệu thường là nút thắt. Thứ tự nên thử:
+1. **Tối ưu query và index** trước. Rẻ nhất mà hiệu quả nhất.
+2. **Cache** (Redis) cho dữ liệu đọc nhiều, kèm chống cache stampede.
+3. **Read replica**: ghi vào primary, đọc từ replica. Chấp nhận **replication lag**, tức là có thể không đọc được ngay thứ mình vừa ghi. Những màn hình cần đọc ngay dữ liệu vừa ghi thì đọc từ primary.
+4. **Partitioning hoặc sharding**: chia dữ liệu theo key (`user_id % N`, theo vùng). Mỗi shard chịu một phần tải. Cái giá phải trả: query xuyên shard khó, đổi số shard phải chuyển dữ liệu (consistent hashing giúp giảm việc này), không có transaction xuyên shard. **Shard key** chọn sai sẽ tạo *hot shard*.
+5. **Xử lý bất đồng bộ**: đẩy việc nặng (gửi mail, xuất báo cáo) vào hàng đợi để worker xử lý. Hàng đợi hấp thụ được tải tăng đột biến.
+
+## Đo trước khi scale
+
+Phải biết nút thắt nằm ở đâu: CPU, RAM, I/O, connection pool của DB, hay lock. Chỉ số cần theo dõi: throughput (RPS), độ trễ **p95/p99** (không chỉ nhìn trung bình), tỉ lệ lỗi, mức bão hoà tài nguyên. **Định luật Amdahl**: phần việc tuần tự (một DB, một khoá dùng chung) giới hạn mức tăng tốc, thêm bao nhiêu instance cũng vậy.
+
+## Autoscaling
+
+Autoscaling (Kubernetes HPA, AWS ASG) thêm hoặc bớt instance theo CPU, RPS hoặc độ dài hàng đợi. Để autoscale hiệu quả, ứng dụng cần **khởi động nhanh**, **tắt êm** (graceful shutdown, xử lý nốt request đang dở), và readiness check phản ánh đúng tình trạng.
+%%% quiz
+? Vì sao service cần stateless để scale ngang?
+* Để instance nào cũng xử lý được mọi request, load balancer chia tải tự do, instance chết cũng không mất dữ liệu
+- Để tiết kiệm RAM
+- Vì Kubernetes bắt buộc
+? Ứng dụng lưu file upload vào ổ đĩa local, và chạy 3 instance sau load balancer. Vấn đề là gì?
+- Không có vấn đề gì
+* Request tải file có thể rơi vào instance không có file đó. Nên lưu lên object storage như S3
+- Upload chậm hơn
+? Dùng read replica thì phải chấp nhận điều gì?
+- Không ghi được nữa
+* Replication lag: có thể không đọc thấy ngay dữ liệu vừa ghi
+- Mất dữ liệu khi primary chết
+? Nhược điểm lớn của scale dọc là gì?
+- Phải viết lại code
+* Có trần phần cứng, giá tăng phi tuyến, và vẫn là một điểm lỗi duy nhất
+- Không dùng được với Java
+? Job `@Scheduled` gửi email tổng kết chạy trên 4 instance. Cần làm gì để email không bị gửi 4 lần?
+* Dùng khoá phân tán (ví dụ ShedLock) để mỗi lần chỉ một instance chạy job
+- Đặt `fixedRate` lớn hơn
+- Không cần làm gì
+? Chọn shard key sai thường dẫn tới điều gì?
+- Mất dữ liệu
+* Hot shard: một shard nhận phần lớn tải trong khi các shard khác rảnh
+- Query nhanh hơn
+%%% hints
+- Chạy 2 instance backend (cổng 8081 và 8083) sau Nginx với `upstream` round-robin. Đăng nhập rồi gọi API nhiều lần. Nếu session lưu trong bộ nhớ thì chuyện gì xảy ra?
+- Chuyển session sang Redis bằng `spring-session-data-redis`, hoặc dùng JWT, rồi lặp lại thử nghiệm trên.
+- Dùng `k6` hoặc `wrk` bắn tải vào 1 instance rồi 2 instance. So sánh RPS và p99, và xem nút thắt nằm ở đâu (CPU hay DB).
+%%% starter
+%%% tests
+%%% solution

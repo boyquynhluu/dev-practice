@@ -1,0 +1,82 @@
+%%% meta
+id: java-23
+title: Monolith — Modular monolith và ranh giới module
+level: intermediate
+topic: Monolith
+order: 23
+%%% theory
+## Monolith không phải là xấu
+
+Monolith là **một ứng dụng triển khai được** (một file jar, một tiến trình). Ưu điểm của nó:
+- Gọi hàm trong cùng tiến trình, nên nhanh và không có lỗi mạng.
+- Transaction ACID trên một DB, nhất quán ngay lập tức.
+- Dễ debug, dễ refactor nhờ IDE theo dõi được mọi lời gọi, deploy cũng đơn giản.
+
+Vấn đề thường không nằm ở chỗ có một tiến trình, mà ở chỗ **không có ranh giới**. Module nào cũng gọi thẳng repository và entity của module khác. Kết quả là một *big ball of mud*: sửa một chỗ thì vỡ ở mười chỗ khác.
+
+## Modular monolith
+
+Vẫn là một ứng dụng, nhưng chia thành các **module theo nghiệp vụ** (ordering, billing, catalog, shipping). Mỗi module tuân theo các quy tắc:
+
+1. **Có public API rõ ràng.** Module khác chỉ gọi qua một facade hoặc service interface, chẳng hạn `BillingApi.charge(...)`, và chỉ nhận DTO. Entity, repository và các class nội bộ thì **không public** (package-private, hoặc đặt trong gói `internal`).
+2. **Sở hữu dữ liệu riêng.** Mỗi module có các bảng riêng, có thể tách schema riêng. **Không JOIN hay UPDATE bảng của module khác.** Cần dữ liệu của module khác thì gọi API của nó, hoặc giữ một bản sao được cập nhật qua event.
+3. **Phụ thuộc một chiều và không có vòng.** Ví dụ `ordering → billing` được, nhưng `billing → ordering` thì không. Khi cần báo ngược lại thì dùng **domain event**, như `OrderPlaced` để billing lắng nghe.
+4. **Giao tiếp qua event trong tiến trình** (Spring `ApplicationEventPublisher`, `@TransactionalEventListener`) cho các luồng không cần đồng bộ.
+
+```
+com.shop.ordering      (public: OrderApi, OrderDto, OrderPlaced)
+com.shop.ordering.internal   (Order, OrderRepository, OrderService)
+com.shop.billing       (public: BillingApi)
+com.shop.billing.internal    (...)
+```
+
+## Bắt buộc tuân theo ranh giới
+
+Quy ước trên giấy rồi sẽ bị phá. Hãy **kiểm tra trong CI**:
+- **ArchUnit**: `noClasses().that().resideInAPackage("..billing..").should().dependOnClassesThat().resideInAPackage("..ordering.internal..")`.
+- **Spring Modulith**: `ApplicationModules.of(App.class).verify()` phát hiện vòng phụ thuộc và truy cập vào gói internal. Nó còn có `@ApplicationModuleTest` để test riêng từng module, và hỗ trợ lưu event bền vững (event publication registry).
+- Hoặc tách hẳn thành nhiều Maven/Gradle module. Khi đó compiler sẽ chặn luôn.
+
+## Dùng chung database: đánh đổi
+
+| Dùng chung bảng giữa các module | Mỗi module sở hữu bảng riêng |
+|---|---|
+| JOIN tiện, báo cáo dễ | Phải gọi API hoặc chép dữ liệu qua event |
+| Đổi schema là vỡ module khác | Module tự do đổi schema của mình |
+| Không tách thành microservice được | Muốn tách thì nhấc nguyên module ra |
+
+## Lộ trình tốt
+
+Bắt đầu bằng **modular monolith**. Chỉ tách một module ra thành microservice khi có **lý do cụ thể**: cần scale riêng, có team riêng cần deploy độc lập, hoặc dùng công nghệ khác. Khi ranh giới đã sạch thì việc tách gần như chỉ là thay lời gọi hàm bằng lời gọi qua mạng.
+
+## Test tích hợp theo module
+
+Test mỗi module với các module khác được thay bằng mock hoặc stub ở mức public API, dùng `@ApplicationModuleTest` hoặc `@SpringBootTest` với các package chỉ định. Kèm theo đó là một vài test end-to-end cho luồng xuyên nhiều module.
+%%% quiz
+? Đặc điểm cốt lõi của một modular monolith là gì?
+- Mỗi module chạy trong một container riêng
+* Một ứng dụng triển khai, chia module theo nghiệp vụ với public API rõ ràng và mỗi module sở hữu dữ liệu riêng
+- Mỗi module dùng một ngôn ngữ khác nhau
+? Module billing cần thông tin đơn hàng. Cách nào đúng ranh giới?
+- JOIN thẳng vào bảng `orders`
+- Inject `OrderRepository` của module ordering
+* Gọi `OrderApi` (public) hoặc lắng nghe event `OrderPlaced` để giữ bản sao cần thiết
+? `ordering` gọi `billing`, và `billing` cũng cần báo lại cho `ordering` khi thanh toán xong. Nên làm gì?
+* Billing publish event `PaymentCompleted`, ordering lắng nghe event đó. Như vậy phụ thuộc vẫn một chiều
+- Cho billing gọi thẳng `OrderService`
+- Gộp hai module làm một
+? Làm sao đảm bảo không ai vi phạm ranh giới module theo thời gian?
+- Ghi chú trong README
+* Viết test kiến trúc bằng ArchUnit hoặc Spring Modulith `verify()` và chạy trong CI
+- Code review là đủ
+? Khi nào nên tách một module ra thành microservice?
+- Ngay từ đầu dự án
+* Khi có lý do cụ thể: cần scale riêng, cần deploy độc lập theo team, hoặc cần công nghệ khác
+- Khi module có hơn 10 class
+%%% hints
+- Trong project Spring Boot của bạn, chia package theo nghiệp vụ (`ordering`, `billing`) thay vì theo tầng (`controller`, `service`, `repository`).
+- Thêm `spring-modulith-starter-test` vào project. Viết test `ApplicationModules.of(App.class).verify()` và cố ý gọi một class internal của module khác để xem test báo đỏ.
+- Đổi một lời gọi đồng bộ từ billing ngược về ordering thành `ApplicationEventPublisher.publishEvent(...)` kết hợp `@TransactionalEventListener`.
+%%% starter
+%%% tests
+%%% solution

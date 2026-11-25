@@ -1,0 +1,26 @@
+server:
+  port: ${PORT:8081}
+  address: ${BIND_ADDRESS:127.0.0.1}   # chỉ nghe localhost vì service chạy code người dùng
+  shutdown: graceful
+spring:
+  application:
+    name: backend-java
+  datasource:
+    url: jdbc:h2:file:${DATA_DIR:./data}/progress
+    username: sa
+    password: ""
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+app:
+  cors-origins: ${CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
+runner:
+  lib-dir: ${RUNNER_LIB_DIR:target/runner-lib}
+  timeout-seconds: 20
+  test-timeout-seconds: 6
+  max-concurrent: 3
+  max-output-bytes: 65536
+  max-code-chars: 60000

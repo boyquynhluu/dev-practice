@@ -1,0 +1,174 @@
+%%% meta
+id: java-07
+title: Stream API và Optional — báo cáo đơn hàng
+level: intermediate
+topic: Functional
+order: 7
+%%% theory
+## Pipeline của stream
+
+```
+nguồn  →  thao tác trung gian (lazy)  →  thao tác kết thúc
+list.stream() .filter() .map() .sorted()   .toList() / collect / sum / findFirst
+```
+
+- Các thao tác trung gian **lazy**: chưa chạy gì cho đến khi gặp thao tác kết thúc.
+- Stream **chỉ dùng được một lần**.
+- Không sửa biến bên ngoài từ trong lambda (side effect). Hãy dùng `collect`/`reduce`.
+
+## Collectors hay dùng
+
+```java
+orders.stream().collect(Collectors.groupingBy(Order::customer,
+        TreeMap::new, Collectors.summingLong(Order::total)));
+Collectors.counting();
+Collectors.toMap(k, v, (a, b) -> a + b);   // xử lý trùng key, nếu không sẽ ném lỗi
+lines.stream().mapToLong(l -> l.qty() * l.price()).sum();
+orders.stream().flatMap(o -> o.lines().stream());  // làm phẳng list lồng nhau
+```
+
+## Optional
+
+`Optional<T>` nói rõ rằng **có thể không có giá trị**. Nó dùng làm kiểu trả về, không dùng làm field hay tham số.
+
+```java
+findById(id).map(Order::customer).orElse("unknown");
+findById(id).orElseThrow(() -> new NotFoundException(id));
+```
+
+Tránh gọi `optional.get()` khi chưa kiểm tra: làm vậy cũng chẳng khác gì null.
+
+## Khi nào **không** dùng stream
+
+Logic có nhiều nhánh, cần `break` sớm hoặc cần xử lý checked exception thì vòng `for` thường dễ đọc hơn. Stream để làm code rõ ràng hơn, không phải để khoe.
+%%% quiz
+? `list.stream().filter(...).map(...)` mà không có thao tác kết thúc thì…
+* không chạy gì cả
+- chạy filter nhưng chưa chạy map
+- ném lỗi
+? `Collectors.toMap` gặp key trùng mà không có hàm merge thì…
+- giữ giá trị sau
+* ném IllegalStateException
+- giữ giá trị đầu
+%%% hints
+- Tạo helper `long total(Order o)` = tổng `qty * price` của các line.
+- `revenueByCustomer`: `filter(PAID)` rồi `groupingBy(Order::customer, TreeMap::new, summingLong(...))`.
+- `topSku`: `flatMap` các line, `groupingBy(sku, summingLong(qty))`, rồi `max` với comparator theo value, hoà thì sku nhỏ hơn thắng.
+%%% starter
+import java.util.*;
+import java.util.stream.*;
+
+record Line(String sku, int qty, long price) {
+}
+
+record Order(String id, String customer, String status, List<Line> lines) {
+}
+
+class Report {
+    /** Tổng doanh thu các đơn status = "PAID". */
+    static long revenue(List<Order> orders) {
+        return 0; // TODO
+    }
+
+    /** Doanh thu đơn PAID theo khách hàng, key sắp xếp tăng dần. */
+    static Map<String, Long> revenueByCustomer(List<Order> orders) {
+        return new TreeMap<>(); // TODO
+    }
+
+    /** Số đơn theo từng status. */
+    static Map<String, Long> countByStatus(List<Order> orders) {
+        return new HashMap<>(); // TODO
+    }
+
+    /** SKU bán nhiều nhất (theo tổng qty, chỉ đơn PAID); hoà thì sku nhỏ hơn theo chữ cái. */
+    static Optional<String> topSku(List<Order> orders) {
+        return Optional.empty(); // TODO
+    }
+
+    /** Tên khách của đơn, hoặc "unknown". Dùng Optional, không dùng if null. */
+    static String customerOf(List<Order> orders, String orderId) {
+        return "unknown"; // TODO
+    }
+}
+%%% tests
+import java.util.*;
+
+class Tests {
+    static final List<Order> DATA = List.of(
+            new Order("o1", "binh", "PAID", List.of(new Line("A", 2, 100), new Line("B", 1, 50))),
+            new Order("o2", "an", "PAID", List.of(new Line("B", 3, 50))),
+            new Order("o3", "an", "CANCELLED", List.of(new Line("A", 10, 100))),
+            new Order("o4", "binh", "PAID", List.of(new Line("C", 1, 1000))),
+            new Order("o5", "chi", "PENDING", List.of()));
+
+    static void run(T t) {
+        t.test("revenue chỉ tính PAID", () -> T.eq(250L + 150L + 1000L, Report.revenue(DATA)));
+        t.test("revenue list rỗng", () -> T.eq(0L, Report.revenue(List.of())));
+        t.test("revenueByCustomer", () -> {
+            Map<String, Long> m = Report.revenueByCustomer(DATA);
+            T.eq(List.of("an", "binh"), new ArrayList<>(m.keySet()));
+            T.eq(150L, m.get("an"));
+            T.eq(1250L, m.get("binh"));
+        });
+        t.test("countByStatus", () -> {
+            Map<String, Long> m = Report.countByStatus(DATA);
+            T.eq(3L, m.get("PAID"));
+            T.eq(1L, m.get("CANCELLED"));
+            T.eq(1L, m.get("PENDING"));
+        });
+        t.test("topSku bỏ qua đơn huỷ", () -> T.eq(Optional.of("B"), Report.topSku(DATA)));
+        t.test("topSku hoà thì theo chữ cái", () -> T.eq(Optional.of("X"), Report.topSku(List.of(
+                new Order("1", "a", "PAID", List.of(new Line("Y", 2, 1), new Line("X", 2, 1)))))));
+        t.test("topSku không có dữ liệu", () -> T.eq(Optional.empty(), Report.topSku(List.of())));
+        t.test("customerOf", () -> {
+            T.eq("an", Report.customerOf(DATA, "o2"));
+            T.eq("unknown", Report.customerOf(DATA, "nope"));
+        });
+    }
+}
+%%% solution
+import java.util.*;
+import java.util.stream.*;
+
+record Line(String sku, int qty, long price) {
+}
+
+record Order(String id, String customer, String status, List<Line> lines) {
+}
+
+class Report {
+    private static long total(Order o) {
+        return o.lines().stream().mapToLong(l -> l.qty() * l.price()).sum();
+    }
+
+    private static Stream<Order> paid(List<Order> orders) {
+        return orders.stream().filter(o -> "PAID".equals(o.status()));
+    }
+
+    static long revenue(List<Order> orders) {
+        return paid(orders).mapToLong(Report::total).sum();
+    }
+
+    static Map<String, Long> revenueByCustomer(List<Order> orders) {
+        return paid(orders).collect(Collectors.groupingBy(Order::customer, TreeMap::new,
+                Collectors.summingLong(Report::total)));
+    }
+
+    static Map<String, Long> countByStatus(List<Order> orders) {
+        return orders.stream().collect(Collectors.groupingBy(Order::status, Collectors.counting()));
+    }
+
+    static Optional<String> topSku(List<Order> orders) {
+        Map<String, Long> qty = paid(orders).flatMap(o -> o.lines().stream())
+                .collect(Collectors.groupingBy(Line::sku, Collectors.summingLong(Line::qty)));
+        return qty.entrySet().stream()
+                .max(Map.Entry.<String, Long>comparingByValue()
+                        .thenComparing(Map.Entry.<String, Long>comparingByKey().reversed()))
+                .map(Map.Entry::getKey);
+    }
+
+    static String customerOf(List<Order> orders, String orderId) {
+        return orders.stream().filter(o -> o.id().equals(orderId)).findFirst()
+                .map(Order::customer).orElse("unknown");
+    }
+}

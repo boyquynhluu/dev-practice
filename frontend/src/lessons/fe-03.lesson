@@ -1,0 +1,138 @@
+%%% meta
+id: fe-03
+title: Object, destructuring, spread và bất biến
+level: core
+topic: JavaScript cơ bản
+order: 3
+%%% theory
+## Destructuring
+
+```js
+const { id, name: fullName, role = 'user', ...rest } = user;   // đổi tên, giá trị mặc định, phần còn lại
+const [first, , third] = list;
+function UserCard({ user: { name }, onClick }) { ... }         // ngay ở tham số
+```
+
+## Spread và cập nhật bất biến
+
+```js
+const next = { ...user, name: 'An' };                        // sao chép NÔNG + ghi đè
+const deeper = { ...state, profile: { ...state.profile, city: 'HN' } };  // tầng lồng phải spread tiếp
+const arr2 = [...arr, item];                                 // thêm
+const arr3 = arr.map((x) => (x.id === id ? { ...x, done: true } : x));  // sửa một phần tử
+const arr4 = arr.filter((x) => x.id !== id);                 // xoá
+```
+
+## Vì sao React cần bất biến?
+
+React so sánh state cũ và mới **bằng tham chiếu** (`Object.is`). Nếu bạn sửa trực tiếp `state.items.push(x)` rồi `setState(state)`, tham chiếu không đổi nên React **không render lại**. Ngoài ra, mọi nơi đang giữ object cũ cũng bị thay đổi theo mà không hề hay biết.
+
+## Sao chép nông và sâu
+
+- `{...obj}` và `Object.assign` chỉ sao chép **tầng đầu**. Object lồng bên trong vẫn là chung.
+- `structuredClone(obj)` sao chép sâu (hỗ trợ Date, Map, Set; không hỗ trợ function).
+
+## Optional chaining và nullish
+
+```js
+user?.profile?.address?.city ?? 'Chưa có'
+```
+%%% quiz
+? `const b = { ...a }; b.profile.city = 'X'` có làm thay đổi `a.profile.city` không?
+* Có, vì spread chỉ sao chép nông
+- Không
+? Sửa trực tiếp `state.items.push(x)` rồi gọi `setState(state)` thì sao?
+- React render lại bình thường
+* React có thể không render lại vì tham chiếu không đổi
+%%% hints
+- setIn: dùng đệ quy. `setIn(obj, [k, ...rest], v)` trả `{ ...obj, [k]: rest.length ? setIn(obj?.[k] ?? {}, rest, v) : v }`.
+- pick: `Object.fromEntries(keys.filter((k) => k in obj).map((k) => [k, obj[k]]))`.
+- toggleTodo: dùng `map`, tạo object mới cho đúng phần tử cần đổi.
+%%% starter
+/** setIn({a:{b:1}}, ['a','c'], 2) -> {a:{b:1,c:2}} — KHÔNG sửa object gốc, nhánh không đổi giữ nguyên tham chiếu */
+function setIn(obj, path, value) {
+  let cur = obj;
+  for (const k of path.slice(0, -1)) cur = cur[k] ??= {};
+  cur[path.at(-1)] = value; // TODO: đang sửa trực tiếp!
+  return obj;
+}
+
+/** Lấy các key có trong obj */
+function pick(obj, keys) {
+  return {}; // TODO
+}
+
+/** Bỏ các key */
+function omit(obj, keys) {
+  return obj; // TODO
+}
+
+/** Đảo done của todo có id, trả mảng mới */
+function toggleTodo(todos, id) {
+  return todos; // TODO
+}
+
+/** Lấy city: user.profile.address.city hoặc 'N/A' */
+function cityOf(user) {
+  return user.profile.address.city; // TODO: crash khi thiếu
+}
+%%% tests
+test('setIn tạo object mới, không sửa gốc', () => {
+  const a = { x: { y: 1 }, z: { k: 1 } };
+  const b = setIn(a, ['x', 'w'], 2);
+  expect(b).toEqual({ x: { y: 1, w: 2 }, z: { k: 1 } });
+  expect(a).toEqual({ x: { y: 1 }, z: { k: 1 } });
+});
+
+test('setIn giữ tham chiếu nhánh không đổi (structural sharing)', () => {
+  const a = { x: { y: 1 }, z: { k: 1 } };
+  const b = setIn(a, ['x', 'y'], 5);
+  expect(b === a).toBe(false);
+  expect(b.z === a.z).toBe(true);
+});
+
+test('setIn tạo đường dẫn mới', () => {
+  expect(setIn({}, ['a', 'b', 'c'], 1)).toEqual({ a: { b: { c: 1 } } });
+});
+
+test('pick / omit', () => {
+  const u = { id: 1, name: 'An', password: 'x' };
+  expect(pick(u, ['id', 'name', 'nope'])).toEqual({ id: 1, name: 'An' });
+  expect(omit(u, ['password'])).toEqual({ id: 1, name: 'An' });
+  expect(u.password).toBe('x');
+});
+
+test('toggleTodo bất biến', () => {
+  const todos = [{ id: 1, done: false }, { id: 2, done: false }];
+  const next = toggleTodo(todos, 2);
+  expect(next).toEqual([{ id: 1, done: false }, { id: 2, done: true }]);
+  expect(todos[1].done).toBe(false);
+  expect(next[0] === todos[0]).toBe(true);
+});
+
+test('cityOf an toàn khi thiếu dữ liệu', () => {
+  expect(cityOf({ profile: { address: { city: 'HN' } } })).toBe('HN');
+  expect(cityOf({})).toBe('N/A');
+  expect(cityOf(null)).toBe('N/A');
+});
+%%% solution
+function setIn(obj, path, value) {
+  const [k, ...rest] = path;
+  return { ...obj, [k]: rest.length ? setIn(obj?.[k] ?? {}, rest, value) : value };
+}
+
+function pick(obj, keys) {
+  return Object.fromEntries(keys.filter((k) => k in obj).map((k) => [k, obj[k]]));
+}
+
+function omit(obj, keys) {
+  return Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)));
+}
+
+function toggleTodo(todos, id) {
+  return todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
+}
+
+function cityOf(user) {
+  return user?.profile?.address?.city ?? 'N/A';
+}

@@ -1,0 +1,369 @@
+%%% meta
+id: java-39
+title: Testing — Test double và tự viết mini Mockito bằng dynamic proxy
+level: advanced
+topic: Testing
+order: 39
+%%% theory
+## Test double: các loại "đồ giả"
+
+| Loại | Làm gì | Ví dụ |
+|---|---|---|
+| **Dummy** | Chỉ để truyền cho đủ tham số, không bao giờ được dùng | `null`, `new Object()` |
+| **Stub** | Trả về giá trị dựng sẵn | `when(rates.get("USD")).thenReturn(25_000)` |
+| **Spy** | Ghi lại các lời gọi để kiểm tra sau | danh sách email đã gửi |
+| **Mock** | Stub và spy kết hợp, kèm **kỳ vọng** về tương tác | `verify(mailer).send("a@x.com", ...)` |
+| **Fake** | Một cài đặt chạy được nhưng đơn giản | `InMemoryUserRepository`, H2 thay MySQL |
+
+Chọn loại nào:
+- Ưu tiên **kiểm tra trạng thái** (state): gọi xong rồi xem kết quả và dữ liệu. Chỉ **kiểm tra tương tác** (verify) khi tương tác **chính là** kết quả, ví dụ "đã gửi email" hay "đã publish event".
+- **Không mock thứ mình không sở hữu**, như `HttpClient` hay `JdbcTemplate`. Hãy bọc chúng sau một interface của mình rồi mock interface đó. Hoặc dùng Testcontainers và WireMock.
+- Mock quá nhiều thì test bị dính chặt vào cách cài đặt. Đổi code bên trong mà hành vi không đổi, test vẫn đỏ.
+
+## Mockito hoạt động thế nào
+
+```java
+PaymentGateway gw = mock(PaymentGateway.class);
+when(gw.charge("acc", 100)).thenReturn(true);
+service.checkout(...);
+verify(gw, times(1)).charge("acc", 100);
+```
+
+`mock(Interface.class)` dùng **dynamic proxy**. Mỗi lời gọi method trên proxy đi vào một `InvocationHandler`, và handler này làm ba việc:
+1. **Ghi lại** tên method và các tham số.
+2. Nếu có stub thì trả kết quả của stub. Không thì trả **giá trị mặc định** theo kiểu trả về: `0`, `false`, `null`, `Optional.empty()`, list rỗng.
+3. `verify` đếm số lời gọi đã ghi được.
+
+```java
+Object proxy = Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type},
+        (p, method, args) -> { /* ghi lại, trả stub hoặc giá trị mặc định */ });
+```
+
+Các method của `Object` như `toString`, `equals` và `hashCode` cũng đi qua handler. Phải xử lý riêng (so sánh identity, hash identity) để mock dùng được làm key của `HashMap` hay in ra log.
+
+(Mockito thật dùng ByteBuddy để mock được cả class. Ở đây ta chỉ cần mock interface.)
+
+## Bài tập
+
+Viết `MiniMock` gồm `mock`, `stub`, `calls` và `verify`. Sau đó dùng chính nó để test một `CheckoutService` có sẵn.
+%%% quiz
+? `InMemoryUserRepository` dùng trong test là loại test double nào?
+- Stub
+- Mock
+* Fake
+? Khi nào nên verify tương tác thay vì kiểm tra trạng thái?
+* Khi tương tác chính là kết quả mong muốn, ví dụ đã gửi email hay đã publish event
+- Luôn luôn, vì verify chính xác hơn
+- Không bao giờ
+? Vì sao "không mock thứ mình không sở hữu", như HttpClient của thư viện?
+* Vì mock có thể không khớp hành vi thật. Nên bọc sau interface của mình hoặc test với hệ thống thật như Testcontainers hay WireMock
+- Vì Mockito không mock được class của thư viện
+- Vì như vậy test chạy chậm
+? Gọi một method chưa stub trên mock có kiểu trả về `int`. Mock trả về gì?
+- null
+* 0
+- Ném exception
+%%% hints
+- Tạo một class `Handler implements InvocationHandler` chứa `Map<String, Function<Object[], Object>> stubs` và `List<Call> calls`, với `record Call(String method, List<Object> args)`.
+- `invoke`: nếu `method.getDeclaringClass() == Object.class` thì xử lý riêng `toString` (`"Mock(" + type.getSimpleName() + ")"`), `equals` (`proxy == args[0]`) và `hashCode` (`System.identityHashCode(proxy)`), và **không ghi lại**.
+- Tham số `args` có thể là `null` khi method không có tham số. Dùng `args == null ? List.of() : Arrays.asList(args)`.
+- Giá trị mặc định: `boolean.class` → `false`, `int.class` → `0`, `long.class` → `0L`, `double.class` → `0.0`, `Optional.class` → `Optional.empty()`, `List.class` → `List.of()`, còn lại `null`.
+- Lấy handler từ một mock: `Proxy.isProxyClass(mock.getClass())` rồi `(Handler) Proxy.getInvocationHandler(mock)`. Không phải mock thì ném `IllegalArgumentException`.
+- `verify` sai số lần thì ném `AssertionError("Mong đợi " + method + " được gọi " + times + " lần nhưng là " + actual)`.
+%%% starter
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+
+final class MiniMock {
+    private MiniMock() {
+    }
+
+    /** Tạo mock cho interface; type không phải interface → IllegalArgumentException. */
+    static <T> T mock(Class<T> type) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Khi gọi methodName (bất kể tham số) thì trả answer.apply(args). */
+    static void stub(Object mock, String methodName, Function<Object[], Object> answer) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Danh sách tham số của từng lần gọi methodName, theo thứ tự gọi. */
+    static List<List<Object>> calls(Object mock, String methodName) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Số lần gọi khác times → AssertionError. */
+    static void verify(Object mock, String methodName, int times) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+// ---------- code cần test (CHO SẴN) ----------
+interface PaymentGateway {
+    boolean charge(String account, long amount);
+}
+
+interface Mailer {
+    void send(String to, String subject);
+}
+
+interface Inventory {
+    int stock(String sku);
+
+    Optional<String> reserve(String sku, int qty);
+}
+
+class CheckoutService {
+    private final Inventory inventory;
+    private final PaymentGateway gateway;
+    private final Mailer mailer;
+
+    CheckoutService(Inventory inventory, PaymentGateway gateway, Mailer mailer) {
+        this.inventory = inventory;
+        this.gateway = gateway;
+        this.mailer = mailer;
+    }
+
+    String checkout(String account, String email, String sku, int qty, long price) {
+        if (inventory.stock(sku) < qty) return "OUT_OF_STOCK";
+        if (!gateway.charge(account, price * qty)) return "PAYMENT_FAILED";
+        String reservation = inventory.reserve(sku, qty).orElse("none");
+        mailer.send(email, "Đơn hàng " + reservation);
+        return "OK:" + reservation;
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+class Tests {
+    interface Demo {
+        int count();
+
+        long total();
+
+        boolean ok();
+
+        String name();
+
+        Optional<String> find(String id);
+
+        List<String> all();
+
+        void fire(String a, int b);
+    }
+
+    static void run(T t) {
+        t.test("mock trả giá trị mặc định theo kiểu", () -> {
+            Demo d = MiniMock.mock(Demo.class);
+            T.eq(0, d.count());
+            T.eq(0L, d.total());
+            T.eq(false, d.ok());
+            T.eq(null, d.name());
+            T.eq(Optional.empty(), d.find("x"));
+            T.eq(List.of(), d.all());
+            d.fire("x", 1); // void: không lỗi
+        });
+        t.test("stub trả kết quả dựa trên tham số", () -> {
+            Demo d = MiniMock.mock(Demo.class);
+            MiniMock.stub(d, "find", args -> Optional.of("found-" + args[0]));
+            MiniMock.stub(d, "count", args -> 42);
+            T.eq(Optional.of("found-7"), d.find("7"));
+            T.eq(42, d.count());
+        });
+        t.test("ghi lại tham số các lần gọi theo thứ tự", () -> {
+            Demo d = MiniMock.mock(Demo.class);
+            d.fire("a", 1);
+            d.fire("b", 2);
+            d.count();
+            T.eq(List.of(List.of("a", 1), List.of("b", 2)), MiniMock.calls(d, "fire"));
+            T.eq(List.of(List.of()), MiniMock.calls(d, "count"));
+            T.eq(List.of(), MiniMock.calls(d, "name"));
+        });
+        t.test("verify đúng số lần; sai thì AssertionError", () -> {
+            Demo d = MiniMock.mock(Demo.class);
+            d.ok();
+            d.ok();
+            MiniMock.verify(d, "ok", 2);
+            MiniMock.verify(d, "name", 0);
+            T.throwsEx(AssertionError.class, () -> MiniMock.verify(d, "ok", 1));
+        });
+        t.test("stub ném exception thì lỗi được ném ra cho caller", () -> {
+            Demo d = MiniMock.mock(Demo.class);
+            MiniMock.stub(d, "name", args -> {
+                throw new IllegalStateException("db down");
+            });
+            T.throwsEx(IllegalStateException.class, d::name);
+        });
+        t.test("toString/equals/hashCode dùng được và không bị ghi lại", () -> {
+            Demo d = MiniMock.mock(Demo.class);
+            Map<Object, String> m = new HashMap<>();
+            m.put(d, "v");
+            T.eq("v", m.get(d));
+            T.ok(d.equals(d) && !d.equals(MiniMock.mock(Demo.class)), "equals theo identity");
+            T.ok(String.valueOf(d).contains("Demo"), "toString nên có tên interface: " + d);
+            T.eq(List.of(), MiniMock.calls(d, "hashCode"));
+        });
+        t.test("validate: mock class (không phải interface) hoặc object thường", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> MiniMock.mock(ArrayList.class));
+            T.throwsEx(IllegalArgumentException.class, () -> MiniMock.verify("not a mock", "x", 0));
+        });
+        t.test("dùng MiniMock để test CheckoutService: thanh toán thành công", () -> {
+            Inventory inv = MiniMock.mock(Inventory.class);
+            PaymentGateway gw = MiniMock.mock(PaymentGateway.class);
+            Mailer mail = MiniMock.mock(Mailer.class);
+            MiniMock.stub(inv, "stock", args -> 10);
+            MiniMock.stub(inv, "reserve", args -> Optional.of("R-1"));
+            MiniMock.stub(gw, "charge", args -> true);
+            T.eq("OK:R-1", new CheckoutService(inv, gw, mail).checkout("acc", "a@x.com", "SKU", 2, 500));
+            T.eq(List.of(List.of("acc", 1000L)), MiniMock.calls(gw, "charge"));
+            T.eq(List.of(List.of("a@x.com", "Đơn hàng R-1")), MiniMock.calls(mail, "send"));
+        });
+        t.test("dùng MiniMock: thanh toán thất bại thì không giữ hàng, không gửi mail", () -> {
+            Inventory inv = MiniMock.mock(Inventory.class);
+            PaymentGateway gw = MiniMock.mock(PaymentGateway.class); // charge mặc định false
+            Mailer mail = MiniMock.mock(Mailer.class);
+            MiniMock.stub(inv, "stock", args -> 10);
+            T.eq("PAYMENT_FAILED", new CheckoutService(inv, gw, mail).checkout("acc", "a@x.com", "SKU", 1, 500));
+            MiniMock.verify(inv, "reserve", 0);
+            MiniMock.verify(mail, "send", 0);
+        });
+    }
+}
+%%% solution
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+
+final class MiniMock {
+    private MiniMock() {
+    }
+
+    private record Call(String method, List<Object> args) {
+    }
+
+    private static final class Handler implements InvocationHandler {
+        final Class<?> type;
+        final Map<String, Function<Object[], Object>> stubs = new HashMap<>();
+        final List<Call> calls = new ArrayList<>();
+
+        Handler(Class<?> type) { this.type = type; }
+
+        @Override
+        public synchronized Object invoke(Object proxy, Method method, Object[] args) {
+            if (method.getDeclaringClass() == Object.class) {
+                return switch (method.getName()) {
+                    case "equals" -> proxy == args[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    default -> "Mock(" + type.getSimpleName() + ")";
+                };
+            }
+            Object[] safeArgs = args == null ? new Object[0] : args;
+            calls.add(new Call(method.getName(), Arrays.asList(safeArgs)));
+            Function<Object[], Object> answer = stubs.get(method.getName());
+            if (answer != null) return answer.apply(safeArgs);
+            return defaultValue(method.getReturnType());
+        }
+    }
+
+    private static Object defaultValue(Class<?> t) {
+        if (t == boolean.class) return false;
+        if (t == int.class) return 0;
+        if (t == long.class) return 0L;
+        if (t == double.class) return 0.0;
+        if (t == float.class) return 0f;
+        if (t == short.class) return (short) 0;
+        if (t == byte.class) return (byte) 0;
+        if (t == char.class) return '\0';
+        if (t == Optional.class) return Optional.empty();
+        if (t == List.class) return List.of();
+        return null;
+    }
+
+    static <T> T mock(Class<T> type) {
+        if (!type.isInterface()) throw new IllegalArgumentException("MiniMock chỉ mock được interface: " + type.getName());
+        return type.cast(Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type}, new Handler(type)));
+    }
+
+    private static Handler handler(Object mock) {
+        if (mock == null || !Proxy.isProxyClass(mock.getClass())
+                || !(Proxy.getInvocationHandler(mock) instanceof Handler h)) {
+            throw new IllegalArgumentException("Không phải mock: " + mock);
+        }
+        return h;
+    }
+
+    static void stub(Object mock, String methodName, Function<Object[], Object> answer) {
+        Handler h = handler(mock);
+        synchronized (h) {
+            h.stubs.put(methodName, answer);
+        }
+    }
+
+    static List<List<Object>> calls(Object mock, String methodName) {
+        Handler h = handler(mock);
+        synchronized (h) {
+            return h.calls.stream().filter(c -> c.method().equals(methodName)).map(Call::args).toList();
+        }
+    }
+
+    static void verify(Object mock, String methodName, int times) {
+        int actual = calls(mock, methodName).size();
+        if (actual != times) {
+            throw new AssertionError("Mong đợi " + methodName + " được gọi " + times + " lần nhưng là " + actual);
+        }
+    }
+}
+
+interface PaymentGateway {
+    boolean charge(String account, long amount);
+}
+
+interface Mailer {
+    void send(String to, String subject);
+}
+
+interface Inventory {
+    int stock(String sku);
+
+    Optional<String> reserve(String sku, int qty);
+}
+
+class CheckoutService {
+    private final Inventory inventory;
+    private final PaymentGateway gateway;
+    private final Mailer mailer;
+
+    CheckoutService(Inventory inventory, PaymentGateway gateway, Mailer mailer) {
+        this.inventory = inventory;
+        this.gateway = gateway;
+        this.mailer = mailer;
+    }
+
+    String checkout(String account, String email, String sku, int qty, long price) {
+        if (inventory.stock(sku) < qty) return "OUT_OF_STOCK";
+        if (!gateway.charge(account, price * qty)) return "PAYMENT_FAILED";
+        String reservation = inventory.reserve(sku, qty).orElse("none");
+        mailer.send(email, "Đơn hàng " + reservation);
+        return "OK:" + reservation;
+    }
+}

@@ -1,0 +1,326 @@
+%%% meta
+id: java-20
+title: Redis — Cấu trúc dữ liệu và TTL (tự viết mini Redis)
+level: intermediate
+topic: Redis
+order: 20
+%%% theory
+## Redis là gì
+
+Redis là kho key-value **trong RAM**. Mỗi lệnh được xử lý **tuần tự trên một thread**, nên từng lệnh là **atomic**. Độ trễ ở mức dưới 1 ms. Các use case hay gặp: cache, session, rate limit, bộ đếm, bảng xếp hạng, khoá phân tán và hàng đợi nhỏ.
+
+## Cấu trúc dữ liệu: chọn đúng kiểu
+
+| Kiểu | Lệnh tiêu biểu | Dùng cho |
+|---|---|---|
+| **String** | `SET`, `GET`, `INCR`, `SET k v NX EX 30` | cache JSON, bộ đếm, khoá phân tán |
+| **Hash** | `HSET user:1 name An`, `HGETALL` | object nhiều field, sửa được từng field |
+| **List** | `LPUSH`, `RPOP`, `LRANGE` | hàng đợi đơn giản, N mục gần nhất |
+| **Set** | `SADD`, `SISMEMBER`, `SINTER` | tập duy nhất, ví dụ ai đã like |
+| **Sorted Set** | `ZADD board 120 an`, `ZREVRANGE board 0 9` | bảng xếp hạng, sliding window theo thời gian |
+
+Quy ước đặt tên key: `service:entity:id[:field]`, ví dụ `shop:cart:42`. **Không chạy `KEYS *`** trên production vì lệnh này duyệt toàn bộ keyspace và chặn server. Hãy dùng `SCAN`.
+
+## TTL và expire
+
+- `SET k v PX 5000` hoặc `EXPIRE k 5`: key tự mất sau thời gian đó.
+- `PTTL k` trả về **-2** nếu key không tồn tại, **-1** nếu key không có TTL, còn lại là số mili giây còn sống.
+- Gọi `SET` lại cho một key **xoá TTL cũ** (trừ khi dùng `KEEPTTL`). `INCR` thì **giữ nguyên** TTL.
+- Cách Redis xoá key hết hạn:
+  - **Lười (lazy):** khi có lệnh truy cập key đó.
+  - **Chủ động:** định kỳ lấy mẫu ngẫu nhiên vài key có TTL.
+
+  Vì vậy key hết hạn có thể vẫn chiếm RAM thêm một lúc.
+- Khi hết RAM, Redis áp dụng `maxmemory-policy`, ví dụ `allkeys-lru` hay `volatile-ttl`. Với cache thì **luôn đặt TTL**. TTL nên có thêm chút ngẫu nhiên (jitter) để tránh rất nhiều key hết hạn cùng một lúc.
+
+## Kiểu sai (WRONGTYPE)
+
+Gọi `INCR` lên một key đang chứa chữ sẽ lỗi `ERR value is not an integer`. Gọi `ZADD` lên một key kiểu String sẽ lỗi `WRONGTYPE`.
+
+## Bài tập
+
+Tự viết `MiniRedis` với clock tiêm vào, gồm String, INCR, TTL theo đúng ngữ nghĩa của Redis, và một Sorted Set đơn giản để làm bảng xếp hạng.
+%%% quiz
+? `PTTL` trả về -1 nghĩa là gì?
+- Key không tồn tại
+* Key tồn tại nhưng không có TTL
+- Key vừa hết hạn
+? Đã `SET session:1 abc PX 60000`, sau đó gọi `SET session:1 xyz` (không kèm tham số). TTL lúc này ra sao?
+- Vẫn còn khoảng 60 giây
+* Bị xoá, key thành vĩnh viễn
+- Key bị xoá luôn
+? Muốn làm bảng xếp hạng top 10 người chơi theo điểm thì dùng kiểu nào?
+- List
+- Hash
+* Sorted Set
+? Vì sao không nên chạy `KEYS *` trên production?
+* Vì nó duyệt toàn bộ keyspace trên thread duy nhất, chặn mọi lệnh khác
+- Vì nó xoá key
+- Vì nó cần quyền admin
+%%% hints
+- Lưu `Map<String, Entry>` với `record Entry(Object value, long expireAt)`, trong đó `expireAt = -1` nghĩa là không có TTL. Value là `String` hoặc `Map<String, Double>` (cho zset).
+- Viết hàm `Entry live(String key)`: nếu entry đã hết hạn (`expireAt >= 0 && now >= expireAt`) thì `remove` rồi trả `null`. Mọi lệnh đều gọi hàm này trước (đây là xoá lười).
+- `incr`: lấy entry còn sống, parse `Long` (lỗi thì ném `IllegalStateException`), rồi ghi lại với **cùng** `expireAt`.
+- `ztop`: sắp theo điểm giảm dần, cùng điểm thì theo tên tăng dần, rồi `limit(n)`.
+- `size()`: dọn các key hết hạn (`removeIf`) rồi trả `map.size()`.
+%%% starter
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.LongSupplier;
+
+class MiniRedis {
+    private final LongSupplier clock;
+
+    MiniRedis(LongSupplier clockMillis) { this.clock = clockMillis; }
+
+    /** SET key value: ghi đè và XOÁ TTL cũ. */
+    void set(String key, String value) {
+        // TODO
+    }
+
+    /** SET key value PX ttlMillis */
+    void set(String key, String value, long ttlMillis) {
+        // TODO
+    }
+
+    /** null nếu không có, đã hết hạn, hoặc không phải String. */
+    String get(String key) {
+        return null; // TODO
+    }
+
+    boolean del(String key) {
+        return false; // TODO
+    }
+
+    /** Key chưa có thì coi như 0. Giữ nguyên TTL. Không phải số nguyên thì ném IllegalStateException. */
+    long incr(String key) {
+        return 0; // TODO
+    }
+
+    /** false nếu key không tồn tại. */
+    boolean expire(String key, long ttlMillis) {
+        return false; // TODO
+    }
+
+    /** -2: không tồn tại, -1: không TTL, còn lại: số ms còn sống. */
+    long pttl(String key) {
+        return -2; // TODO
+    }
+
+    /** ZADD: thêm hoặc cập nhật điểm. Key đang là String thì ném IllegalStateException (WRONGTYPE). */
+    void zadd(String key, String member, double score) {
+        // TODO
+    }
+
+    /** ZREVRANGE 0 n-1: điểm giảm dần, cùng điểm thì member tăng dần (A→Z). */
+    List<String> ztop(String key, int n) {
+        return List.of(); // TODO
+    }
+
+    /** DBSIZE: số key còn sống. */
+    int size() {
+        return 0; // TODO
+    }
+}
+%%% tests
+import java.util.List;
+
+class Tests {
+    static final class FakeClock implements java.util.function.LongSupplier {
+        long now = 1_000;
+
+        public long getAsLong() { return now; }
+    }
+
+    static void run(T t) {
+        t.test("SET/GET/DEL", () -> {
+            MiniRedis r = new MiniRedis(new FakeClock());
+            r.set("a", "1");
+            T.eq("1", r.get("a"));
+            T.eq(null, r.get("missing"));
+            T.ok(r.del("a"), "del key có tồn tại trả true");
+            T.ok(!r.del("a"), "del lần 2 trả false");
+            T.eq(null, r.get("a"));
+        });
+        t.test("key hết hạn theo TTL", () -> {
+            FakeClock c = new FakeClock();
+            MiniRedis r = new MiniRedis(c);
+            r.set("otp", "123456", 5_000);
+            c.now += 4_999;
+            T.eq("123456", r.get("otp"));
+            c.now += 1;
+            T.eq(null, r.get("otp"));
+        });
+        t.test("PTTL: -2 / -1 / số ms còn lại", () -> {
+            FakeClock c = new FakeClock();
+            MiniRedis r = new MiniRedis(c);
+            T.eq(-2L, r.pttl("x"));
+            r.set("x", "v");
+            T.eq(-1L, r.pttl("x"));
+            T.ok(r.expire("x", 3_000), "expire key tồn tại trả true");
+            c.now += 1_000;
+            T.eq(2_000L, r.pttl("x"));
+            T.ok(!r.expire("nope", 1_000), "expire key không tồn tại trả false");
+        });
+        t.test("SET lại xoá TTL cũ", () -> {
+            FakeClock c = new FakeClock();
+            MiniRedis r = new MiniRedis(c);
+            r.set("s", "a", 1_000);
+            r.set("s", "b");
+            c.now += 10_000;
+            T.eq("b", r.get("s"));
+            T.eq(-1L, r.pttl("s"));
+        });
+        t.test("INCR: key mới = 1, giữ TTL", () -> {
+            FakeClock c = new FakeClock();
+            MiniRedis r = new MiniRedis(c);
+            T.eq(1L, r.incr("hits"));
+            T.eq(2L, r.incr("hits"));
+            r.set("rl", "5", 1_000);
+            T.eq(6L, r.incr("rl"));
+            T.eq(1_000L, r.pttl("rl"));
+            c.now += 1_000;
+            T.eq("hết TTL thì INCR bắt đầu lại", 1L, r.incr("rl"));
+        });
+        t.test("INCR trên giá trị không phải số → IllegalStateException", () -> {
+            MiniRedis r = new MiniRedis(new FakeClock());
+            r.set("name", "an");
+            T.throwsEx(IllegalStateException.class, () -> r.incr("name"));
+        });
+        t.test("Sorted set: bảng xếp hạng", () -> {
+            MiniRedis r = new MiniRedis(new FakeClock());
+            r.zadd("board", "an", 120);
+            r.zadd("board", "binh", 90);
+            r.zadd("board", "chi", 150);
+            r.zadd("board", "dung", 120);
+            T.eq(List.of("chi", "an", "dung"), r.ztop("board", 3));
+            r.zadd("board", "binh", 200);
+            T.eq(List.of("binh", "chi"), r.ztop("board", 2));
+            T.eq(List.of(), r.ztop("missing", 3));
+        });
+        t.test("WRONGTYPE: zadd vào key String", () -> {
+            MiniRedis r = new MiniRedis(new FakeClock());
+            r.set("k", "v");
+            T.throwsEx(IllegalStateException.class, () -> r.zadd("k", "m", 1));
+        });
+        t.test("size() không đếm key đã hết hạn", () -> {
+            FakeClock c = new FakeClock();
+            MiniRedis r = new MiniRedis(c);
+            r.set("a", "1");
+            r.set("b", "2", 100);
+            r.zadd("z", "m", 1);
+            T.eq(3, r.size());
+            c.now += 100;
+            T.eq(2, r.size());
+        });
+    }
+}
+%%% solution
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.LongSupplier;
+
+class MiniRedis {
+    private record Entry(Object value, long expireAt) {
+    }
+
+    private final LongSupplier clock;
+    private final Map<String, Entry> data = new HashMap<>();
+
+    MiniRedis(LongSupplier clockMillis) { this.clock = clockMillis; }
+
+    private boolean expired(Entry e, long now) {
+        return e.expireAt() >= 0 && now >= e.expireAt();
+    }
+
+    private Entry live(String key) {
+        Entry e = data.get(key);
+        if (e != null && expired(e, clock.getAsLong())) {
+            data.remove(key);
+            return null;
+        }
+        return e;
+    }
+
+    synchronized void set(String key, String value) {
+        data.put(key, new Entry(value, -1));
+    }
+
+    synchronized void set(String key, String value, long ttlMillis) {
+        data.put(key, new Entry(value, clock.getAsLong() + ttlMillis));
+    }
+
+    synchronized String get(String key) {
+        Entry e = live(key);
+        return e != null && e.value() instanceof String s ? s : null;
+    }
+
+    synchronized boolean del(String key) {
+        return live(key) != null && data.remove(key) != null;
+    }
+
+    synchronized long incr(String key) {
+        Entry e = live(key);
+        long current = 0;
+        if (e != null) {
+            if (!(e.value() instanceof String s)) throw new IllegalStateException("WRONGTYPE");
+            try {
+                current = Long.parseLong(s);
+            } catch (NumberFormatException ex) {
+                throw new IllegalStateException("ERR value is not an integer");
+            }
+        }
+        long next = current + 1;
+        data.put(key, new Entry(Long.toString(next), e == null ? -1 : e.expireAt()));
+        return next;
+    }
+
+    synchronized boolean expire(String key, long ttlMillis) {
+        Entry e = live(key);
+        if (e == null) return false;
+        data.put(key, new Entry(e.value(), clock.getAsLong() + ttlMillis));
+        return true;
+    }
+
+    synchronized long pttl(String key) {
+        Entry e = live(key);
+        if (e == null) return -2;
+        if (e.expireAt() < 0) return -1;
+        return e.expireAt() - clock.getAsLong();
+    }
+
+    @SuppressWarnings("unchecked")
+    synchronized void zadd(String key, String member, double score) {
+        Entry e = live(key);
+        if (e == null) {
+            e = new Entry(new HashMap<String, Double>(), -1);
+            data.put(key, e);
+        }
+        if (!(e.value() instanceof Map<?, ?> m)) throw new IllegalStateException("WRONGTYPE");
+        ((Map<String, Double>) m).put(member, score);
+    }
+
+    @SuppressWarnings("unchecked")
+    synchronized List<String> ztop(String key, int n) {
+        Entry e = live(key);
+        if (e == null) return List.of();
+        if (!(e.value() instanceof Map<?, ?> m)) throw new IllegalStateException("WRONGTYPE");
+        return ((Map<String, Double>) m).entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
+                .limit(n)
+                .map(Map.Entry::getKey)
+                .toList();
+    }
+
+    synchronized int size() {
+        long now = clock.getAsLong();
+        data.values().removeIf(e -> expired(e, now));
+        return data.size();
+    }
+}

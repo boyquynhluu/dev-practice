@@ -1,0 +1,311 @@
+%%% meta
+id: java-26
+title: Clean Architecture — Dependency rule, use case và port/adapter
+level: advanced
+topic: Clean Architecture
+order: 26
+%%% theory
+## Dependency rule
+
+```
+   [ Frameworks & Drivers: Spring MVC, JPA, Kafka, Redis ]
+        [ Interface adapters: Controller, JpaRepository, KafkaPublisher ]
+             [ Application: use case / application service ]
+                  [ Domain: entity, value object, quy tắc nghiệp vụ ]
+```
+
+**Phụ thuộc trong source code chỉ được hướng vào trong.** Domain và use case **không import** Spring, JPA hay HTTP. Khi use case cần lưu dữ liệu hoặc gửi mail, nó **tự định nghĩa interface** (gọi là *port*) theo đúng nhu cầu của mình. Lớp ngoài **cài đặt** interface đó (gọi là *adapter*).
+
+```java
+// application (lõi): chỉ có Java thuần
+interface UserRepository { Optional<User> findByEmail(String email); void save(User u); }
+
+class RegisterUser {                    // use case
+    RegisterUser(UserRepository repo, PasswordHasher hasher, ...) { ... }
+    RegisterResult handle(RegisterCommand cmd) { ... }
+}
+
+// adapter (lớp ngoài): biết Spring/JPA
+@Repository
+class JpaUserRepository implements UserRepository { ... }
+
+@RestController
+class UserController {
+    private final RegisterUser registerUser;
+    @PostMapping("/users") ResponseEntity<?> register(@RequestBody Req r) {
+        return switch (registerUser.handle(new RegisterCommand(r.email(), r.password()))) {
+            case Registered ok   -> ResponseEntity.status(201).body(ok);
+            case EmailTaken e    -> ResponseEntity.status(409).build();
+            case Invalid bad     -> ResponseEntity.badRequest().body(bad.reason());
+        };
+    }
+}
+```
+
+Đây chính là **Dependency Inversion**. Mũi tên phụ thuộc trong source code (adapter → port) **ngược chiều** với luồng gọi lúc chạy (use case → adapter).
+
+## Lợi ích
+
+- **Test lõi không cần framework.** Truyền vào các fake viết tay, test chạy trong vài mili giây, không cần Spring context hay DB.
+- Đổi hạ tầng (JPA sang JDBC, SMTP sang SES) chỉ phải viết adapter mới. Use case giữ nguyên.
+- Use case đọc giống như mô tả nghiệp vụ.
+
+## Use case trả kết quả thế nào
+
+Lỗi nghiệp vụ có thể **dự đoán được**, như email trùng hay dữ liệu không hợp lệ. Có thể trả về một `sealed interface` kết quả thay vì ném exception. Khi đó controller **buộc** phải xử lý đủ mọi trường hợp, vì `switch` trên sealed type được kiểm tra exhaustive lúc biên dịch.
+
+## Cái giá phải trả
+
+Cách này sinh nhiều interface và mapping hơn. Với CRUD đơn giản thì có thể là thừa. Hãy áp dụng ở **lõi nghiệp vụ phức tạp**. Phần CRUD xung quanh có thể viết đơn giản.
+
+## Bài tập
+
+Viết use case `RegisterUser` chỉ bằng Java thuần, và một adapter `InMemoryUserRepository`. Bộ test dùng fake viết tay, không có framework nào.
+%%% quiz
+? Theo dependency rule, class nào ĐƯỢC import `org.springframework...`?
+- Entity `User`
+- Use case `RegisterUser`
+* Adapter `JpaUserRepository` và `UserController`
+? Interface `UserRepository` (port) nên đặt ở tầng nào?
+* Tầng application hoặc domain, tức tầng dùng nó
+- Tầng infrastructure, cạnh JPA
+- Ở một module riêng của Spring
+? Lợi ích lớn nhất khi lõi không phụ thuộc framework là gì?
+- Code ngắn hơn
+* Test được use case bằng fake trong vài mili giây, không cần DB hay Spring
+- Không cần viết test
+? Vì sao trả về `sealed interface RegisterResult` giúp controller an toàn hơn?
+* Vì `switch` trên sealed type bị compiler bắt phải xử lý đủ mọi trường hợp
+- Vì sealed chạy nhanh hơn exception
+- Vì Spring tự map sealed type sang status
+%%% hints
+- Chuẩn hoá trước tiên: `email = cmd.email() == null ? "" : cmd.email().trim().toLowerCase()`.
+- Thứ tự kiểm tra: email không có `@` thì `Invalid`, mật khẩu ngắn hơn 8 ký tự thì `Invalid`, rồi `repo.findByEmail(email).isPresent()` thì `EmailTaken`.
+- Hợp lệ thì: `id = ids.next()`, `save(new User(id, email, hasher.hash(password)))`, `events.publish(new UserRegistered(id, email))`, trả `new Registered(id)`.
+- `InMemoryUserRepository`: dùng `Map<String, User>` với key là email. `save` thì `put`, `findByEmail` thì `Optional.ofNullable(map.get(email))`.
+%%% starter
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+
+// ---------- domain ----------
+record User(String id, String email, String passwordHash) {
+}
+
+record UserRegistered(String userId, String email) {
+}
+
+// ---------- ports (lõi định nghĩa, lớp ngoài cài đặt) ----------
+interface UserRepository {
+    Optional<User> findByEmail(String email);
+
+    void save(User user);
+}
+
+interface PasswordHasher {
+    String hash(String raw);
+}
+
+interface IdGenerator {
+    String next();
+}
+
+interface EventPublisher {
+    void publish(Object event);
+}
+
+// ---------- use case ----------
+record RegisterCommand(String email, String password) {
+}
+
+sealed interface RegisterResult permits Registered, EmailTaken, Invalid {
+}
+
+record Registered(String userId) implements RegisterResult {
+}
+
+record EmailTaken(String email) implements RegisterResult {
+}
+
+record Invalid(String reason) implements RegisterResult {
+}
+
+/**
+ * - Chuẩn hoá email: trim + lowercase.
+ * - Email không có '@' hoặc mật khẩu < 8 ký tự → Invalid (không lưu, không publish).
+ * - Email đã tồn tại → EmailTaken (không lưu, không publish).
+ * - Hợp lệ → lưu User với mật khẩu ĐÃ HASH, publish UserRegistered, trả Registered(id).
+ */
+class RegisterUser {
+    private final UserRepository repo;
+    private final PasswordHasher hasher;
+    private final IdGenerator ids;
+    private final EventPublisher events;
+
+    RegisterUser(UserRepository repo, PasswordHasher hasher, IdGenerator ids, EventPublisher events) {
+        this.repo = repo;
+        this.hasher = hasher;
+        this.ids = ids;
+        this.events = events;
+    }
+
+    RegisterResult handle(RegisterCommand cmd) {
+        return new Invalid("TODO");
+    }
+}
+
+// ---------- adapter ----------
+class InMemoryUserRepository implements UserRepository {
+    @Override
+    public Optional<User> findByEmail(String email) {
+        return Optional.empty(); // TODO
+    }
+
+    @Override
+    public void save(User user) {
+        // TODO
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.List;
+
+class Tests {
+    static final class Fixture {
+        final InMemoryUserRepository repo = new InMemoryUserRepository();
+        final List<Object> published = new ArrayList<>();
+        int seq = 0;
+        final RegisterUser useCase = new RegisterUser(repo, raw -> "hashed(" + raw + ")", () -> "u-" + (++seq), published::add);
+    }
+
+    static void run(T t) {
+        t.test("đăng ký hợp lệ → Registered, lưu user, publish sự kiện", () -> {
+            Fixture f = new Fixture();
+            RegisterResult r = f.useCase.handle(new RegisterCommand("an@example.com", "secret123"));
+            T.eq(new Registered("u-1"), r);
+            T.ok(f.repo.findByEmail("an@example.com").isPresent(), "user phải được lưu");
+            T.eq(List.of(new UserRegistered("u-1", "an@example.com")), f.published);
+        });
+        t.test("mật khẩu lưu dạng đã hash, không lưu bản gốc", () -> {
+            Fixture f = new Fixture();
+            f.useCase.handle(new RegisterCommand("an@example.com", "secret123"));
+            T.eq("hashed(secret123)", f.repo.findByEmail("an@example.com").get().passwordHash());
+        });
+        t.test("chuẩn hoá email: trim + lowercase", () -> {
+            Fixture f = new Fixture();
+            f.useCase.handle(new RegisterCommand("  An@Example.COM ", "secret123"));
+            T.ok(f.repo.findByEmail("an@example.com").isPresent(), "phải lưu bằng email đã chuẩn hoá");
+        });
+        t.test("email trùng (khác hoa thường) → EmailTaken, không publish thêm", () -> {
+            Fixture f = new Fixture();
+            f.useCase.handle(new RegisterCommand("an@example.com", "secret123"));
+            RegisterResult r = f.useCase.handle(new RegisterCommand("AN@example.com", "another123"));
+            T.eq(new EmailTaken("an@example.com"), r);
+            T.eq(1, f.published.size());
+            T.eq("hashed(secret123)", f.repo.findByEmail("an@example.com").get().passwordHash());
+        });
+        t.test("dữ liệu không hợp lệ → Invalid, không lưu, không publish", () -> {
+            Fixture f = new Fixture();
+            T.ok(f.useCase.handle(new RegisterCommand("no-at-sign", "secret123")) instanceof Invalid, "email thiếu @");
+            T.ok(f.useCase.handle(new RegisterCommand("b@x.com", "short")) instanceof Invalid, "mật khẩu < 8 ký tự");
+            T.ok(f.useCase.handle(new RegisterCommand(null, "secret123")) instanceof Invalid, "email null");
+            T.ok(f.repo.findByEmail("b@x.com").isEmpty(), "không được lưu");
+            T.eq(List.of(), f.published);
+        });
+        t.test("controller xử lý kết quả bằng switch exhaustive", () -> {
+            Fixture f = new Fixture();
+            RegisterResult r = f.useCase.handle(new RegisterCommand("c@x.com", "secret123"));
+            int status = switch (r) {
+                case Registered ok -> 201;
+                case EmailTaken e -> 409;
+                case Invalid bad -> 400;
+            };
+            T.eq(201, status);
+        });
+    }
+}
+%%% solution
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+
+record User(String id, String email, String passwordHash) {
+}
+
+record UserRegistered(String userId, String email) {
+}
+
+interface UserRepository {
+    Optional<User> findByEmail(String email);
+
+    void save(User user);
+}
+
+interface PasswordHasher {
+    String hash(String raw);
+}
+
+interface IdGenerator {
+    String next();
+}
+
+interface EventPublisher {
+    void publish(Object event);
+}
+
+record RegisterCommand(String email, String password) {
+}
+
+sealed interface RegisterResult permits Registered, EmailTaken, Invalid {
+}
+
+record Registered(String userId) implements RegisterResult {
+}
+
+record EmailTaken(String email) implements RegisterResult {
+}
+
+record Invalid(String reason) implements RegisterResult {
+}
+
+class RegisterUser {
+    static final int MIN_PASSWORD = 8;
+
+    private final UserRepository repo;
+    private final PasswordHasher hasher;
+    private final IdGenerator ids;
+    private final EventPublisher events;
+
+    RegisterUser(UserRepository repo, PasswordHasher hasher, IdGenerator ids, EventPublisher events) {
+        this.repo = repo;
+        this.hasher = hasher;
+        this.ids = ids;
+        this.events = events;
+    }
+
+    RegisterResult handle(RegisterCommand cmd) {
+        String email = cmd.email() == null ? "" : cmd.email().trim().toLowerCase();
+        String password = cmd.password() == null ? "" : cmd.password();
+        if (!email.contains("@")) return new Invalid("Email không hợp lệ");
+        if (password.length() < MIN_PASSWORD) return new Invalid("Mật khẩu tối thiểu " + MIN_PASSWORD + " ký tự");
+        if (repo.findByEmail(email).isPresent()) return new EmailTaken(email);
+        String id = ids.next();
+        repo.save(new User(id, email, hasher.hash(password)));
+        events.publish(new UserRegistered(id, email));
+        return new Registered(id);
+    }
+}
+
+class InMemoryUserRepository implements UserRepository {
+    private final Map<String, User> byEmail = new HashMap<>();
+
+    @Override
+    public Optional<User> findByEmail(String email) {
+        return Optional.ofNullable(byEmail.get(email));
+    }
+
+    @Override
+    public void save(User user) {
+        byEmail.put(user.email(), user);
+    }
+}

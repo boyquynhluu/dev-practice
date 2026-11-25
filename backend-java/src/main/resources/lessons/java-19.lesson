@@ -1,0 +1,236 @@
+%%% meta
+id: java-19
+title: MySQL — Schema, chuẩn hoá và phân trang keyset
+level: intermediate
+topic: MySQL
+order: 19
+%%% theory
+## Chuẩn hoá (normalization)
+
+Mục tiêu: **mỗi sự thật chỉ lưu ở một nơi**. Như vậy khi sửa dữ liệu không bị lệch giữa các chỗ.
+
+| Dạng | Quy tắc | Ví dụ vi phạm |
+|---|---|---|
+| **1NF** | Mỗi ô chỉ chứa một giá trị, không có nhóm lặp | Cột `phones = "0901,0902"` |
+| **2NF** | Cột không thuộc khoá phải phụ thuộc vào **toàn bộ** khoá | `order_items(order_id, product_id, product_name)`: tên chỉ phụ thuộc `product_id` |
+| **3NF** | Cột không phụ thuộc bắc cầu qua một cột không phải khoá | `orders(customer_id, customer_email)`: email phụ thuộc `customer_id` |
+
+**Phi chuẩn hoá có chủ đích** là chấp nhận được khi đọc nhiều hơn ghi rất nhiều. Ví dụ lưu `total_amount` trong `orders`, hay lưu `unit_price` **tại thời điểm mua** trong `order_items`. Trường hợp `unit_price` thì đó là **dữ liệu lịch sử**, không phải dữ liệu trùng lặp.
+
+Một vài lựa chọn kiểu dữ liệu nên nhớ:
+- Tiền dùng `DECIMAL(15,2)` hoặc lưu số nguyên theo đơn vị nhỏ nhất. Không dùng `FLOAT` hay `DOUBLE`.
+- Chuỗi dùng `utf8mb4`, vì `utf8` cũ của MySQL không lưu được emoji.
+- Khoá chính nên là `BIGINT AUTO_INCREMENT` hoặc UUID dạng `BINARY(16)`. Thêm khoá ngoại và `NOT NULL` khi có thể.
+
+## Phân trang OFFSET và vấn đề của nó
+
+```sql
+SELECT * FROM orders ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET 100000;
+```
+
+- **Chậm:** MySQL vẫn phải đọc rồi bỏ đi 100.000 dòng. Trang càng sâu càng chậm.
+- **Lệch dữ liệu:** có bản ghi mới chèn vào đầu giữa hai lần tải trang thì mọi dòng bị đẩy xuống. Người dùng sẽ **thấy lại** một bản ghi ở trang 2. Nếu có bản ghi bị xoá thì ngược lại, có dòng **bị sót**.
+
+## Phân trang keyset (seek / cursor)
+
+Thay vì nói "bỏ qua N dòng", ta nói "lấy tiếp các dòng **sau** dòng cuối cùng tôi đã thấy":
+
+```sql
+SELECT * FROM orders
+WHERE (created_at, id) < (?, ?)          -- giá trị của dòng cuối trang trước
+ORDER BY created_at DESC, id DESC
+LIMIT 21;                                -- lấy dư 1 dòng để biết còn trang sau không
+```
+
+- Cần một thứ tự **duy nhất và ổn định**. `created_at` có thể trùng nhau, nên phải thêm `id` làm **tiebreaker**.
+- Có index `(created_at, id)` thì mỗi trang chỉ tốn O(log n + size), bất kể trang sâu tới đâu.
+- API trả về một `nextCursor` mờ (opaque), ví dụ base64 của `"createdAt:id"`. Client gửi lại cursor đó, không gửi số trang.
+- Đánh đổi: không nhảy thẳng được tới "trang 57". Cách này hợp với infinite scroll, feed và các job export.
+
+## Bài tập
+
+Mô phỏng bảng `orders` bằng một `List` chưa sắp xếp, rồi cài phân trang keyset có cursor.
+%%% quiz
+? Bảng `order_items(order_id, product_id, product_name, qty)` có khoá chính `(order_id, product_id)`. Bảng này vi phạm dạng chuẩn nào?
+- 1NF
+* 2NF
+- Không vi phạm
+> `product_name` chỉ phụ thuộc `product_id`, tức một phần của khoá, nên vi phạm 2NF.
+? Vì sao phân trang keyset phải thêm `id` vào sau `created_at`?
+* Vì `created_at` có thể trùng, cần thêm id để thứ tự là duy nhất và không bị lặp hay sót dòng
+- Để query chạy nhanh hơn
+- Vì MySQL bắt buộc phải có
+? Lấy `LIMIT size + 1` trong phân trang keyset để làm gì?
+- Để dự phòng khi có dòng bị xoá
+* Để biết còn trang sau hay không mà không cần COUNT(*)
+- Để sửa lỗi off-by-one của MySQL
+? Nhược điểm của keyset so với OFFSET là gì?
+- Chậm hơn ở trang sâu
+* Không nhảy thẳng tới một số trang bất kỳ được
+- Hay bị lặp dữ liệu
+%%% hints
+- So sánh theo thứ tự giảm dần: dòng `o` nằm **sau** cursor `(c, i)` khi `o.createdAt() < c || (o.createdAt() == c && o.id() < i)`.
+- Tạo `Comparator<Order> desc = Comparator.comparingLong(Order::createdAt).thenComparingLong(Order::id).reversed()`.
+- Lọc, sắp xếp, rồi `limit(size + 1)`. Nếu có nhiều hơn `size` dòng thì cắt bớt về `size` và tạo `nextCursor` từ dòng cuối. Không thì `nextCursor = null`.
+- `decodeCursor`: tách chuỗi bằng `split(":")` và `Long.parseLong`. Chuỗi sai định dạng thì bắt `NumberFormatException` và ném `IllegalArgumentException`.
+%%% starter
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+record Order(long id, long createdAt, String customer) {
+}
+
+/** nextCursor == null nghĩa là đã hết dữ liệu. */
+record Page(List<Order> items, String nextCursor) {
+}
+
+class OrderQueries {
+    static final Comparator<Order> NEWEST_FIRST =
+            Comparator.comparingLong(Order::createdAt).thenComparingLong(Order::id).reversed();
+
+    /** OFFSET (cho sẵn để so sánh): ORDER BY created_at DESC, id DESC LIMIT size OFFSET page*size. */
+    static List<Order> offsetPage(List<Order> table, int page, int size) {
+        return table.stream().sorted(NEWEST_FIRST).skip((long) page * size).limit(size).toList();
+    }
+
+    /**
+     * KEYSET: cursor == null là trang đầu. size phải từ 1 tới 100, ngoài khoảng đó thì ném IllegalArgumentException.
+     * WHERE (created_at, id) < cursor ORDER BY created_at DESC, id DESC LIMIT size
+     */
+    static Page keysetPage(List<Order> table, String cursor, int size) {
+        return new Page(List.of(), null); // TODO
+    }
+
+    /** Ví dụ "1700000000:42". */
+    static String encodeCursor(Order last) {
+        return ""; // TODO
+    }
+
+    /** Trả {createdAt, id}. Cursor sai định dạng thì ném IllegalArgumentException. */
+    static long[] decodeCursor(String cursor) {
+        return new long[]{0, 0}; // TODO
+    }
+}
+%%% tests
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+class Tests {
+    static List<Order> table() {
+        List<Order> t = new ArrayList<>();
+        // cố ý không theo thứ tự, có created_at trùng nhau
+        long[][] rows = {{5, 100}, {1, 50}, {9, 100}, {3, 80}, {7, 100}, {2, 50}, {8, 90}, {4, 80}, {6, 70}};
+        for (long[] r : rows) t.add(new Order(r[0], r[1], "c" + r[0]));
+        return t;
+    }
+
+    static List<Long> ids(List<Order> l) {
+        return l.stream().map(Order::id).toList();
+    }
+
+    static void run(T t) {
+        t.test("encode/decode cursor", () -> {
+            String c = OrderQueries.encodeCursor(new Order(42, 1700000000L, "x"));
+            T.eq(1700000000L, OrderQueries.decodeCursor(c)[0]);
+            T.eq(42L, OrderQueries.decodeCursor(c)[1]);
+        });
+        t.test("cursor không hợp lệ → IllegalArgumentException", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> OrderQueries.decodeCursor("abc"));
+            T.throwsEx(IllegalArgumentException.class, () -> OrderQueries.keysetPage(table(), "1:x", 3));
+        });
+        t.test("size ngoài 1..100 → IllegalArgumentException", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> OrderQueries.keysetPage(table(), null, 0));
+            T.throwsEx(IllegalArgumentException.class, () -> OrderQueries.keysetPage(table(), null, 101));
+        });
+        t.test("trang đầu: created_at giảm dần, trùng thì id giảm dần", () -> {
+            Page p = OrderQueries.keysetPage(table(), null, 4);
+            T.eq(List.of(9L, 7L, 5L, 8L), ids(p.items()));
+            T.ok(p.nextCursor() != null, "còn dữ liệu thì phải có nextCursor");
+        });
+        t.test("đi hết các trang: không trùng, không sót, trang cuối nextCursor = null", () -> {
+            List<Order> tbl = table();
+            List<Long> seen = new ArrayList<>();
+            String cursor = null;
+            int pages = 0;
+            do {
+                Page p = OrderQueries.keysetPage(tbl, cursor, 3);
+                seen.addAll(ids(p.items()));
+                cursor = p.nextCursor();
+                T.ok(++pages <= 3, "9 dòng, size 3 thì phải đúng 3 trang (trang cuối phải có nextCursor = null)");
+            } while (cursor != null);
+            T.eq("tổng số dòng", 9, seen.size());
+            T.eq(List.of(9L, 7L, 5L, 8L, 4L, 3L, 6L, 2L, 1L), seen);
+        });
+        t.test("có bản ghi mới chèn vào đầu giữa hai trang: keyset không lặp (OFFSET thì lặp)", () -> {
+            List<Order> tbl = table();
+            Page p1 = OrderQueries.keysetPage(tbl, null, 3);
+            List<Order> o1 = OrderQueries.offsetPage(tbl, 0, 3);
+            tbl.add(new Order(10, 200, "new"));
+            tbl.add(new Order(11, 201, "new"));
+            Page p2 = OrderQueries.keysetPage(tbl, p1.nextCursor(), 3);
+            List<Order> o2 = OrderQueries.offsetPage(tbl, 1, 3);
+            Set<Long> keyset = new HashSet<>(ids(p1.items()));
+            for (Order o : p2.items()) T.ok(keyset.add(o.id()), "keyset bị lặp id " + o.id());
+            Set<Long> offset = new HashSet<>(ids(o1));
+            boolean dup = o2.stream().anyMatch(o -> !offset.add(o.id()));
+            T.ok(dup, "(minh hoạ) OFFSET đáng lẽ phải lặp dữ liệu ở đây");
+            T.eq(List.of(8L, 4L, 3L), ids(p2.items()));
+        });
+        t.test("số dòng chia hết cho size: trang cuối vẫn nextCursor = null", () -> {
+            List<Order> four = table().subList(0, 4);
+            Page p1 = OrderQueries.keysetPage(four, null, 2);
+            Page p2 = OrderQueries.keysetPage(four, p1.nextCursor(), 2);
+            T.eq(2, p2.items().size());
+            T.eq(null, p2.nextCursor());
+        });
+    }
+}
+%%% solution
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+record Order(long id, long createdAt, String customer) {
+}
+
+record Page(List<Order> items, String nextCursor) {
+}
+
+class OrderQueries {
+    static final Comparator<Order> NEWEST_FIRST =
+            Comparator.comparingLong(Order::createdAt).thenComparingLong(Order::id).reversed();
+
+    static List<Order> offsetPage(List<Order> table, int page, int size) {
+        return table.stream().sorted(NEWEST_FIRST).skip((long) page * size).limit(size).toList();
+    }
+
+    static Page keysetPage(List<Order> table, String cursor, int size) {
+        if (size < 1 || size > 100) throw new IllegalArgumentException("size phải từ 1 tới 100");
+        long[] after = cursor == null ? null : decodeCursor(cursor);
+        List<Order> rows = table.stream()
+                .filter(o -> after == null || o.createdAt() < after[0] || (o.createdAt() == after[0] && o.id() < after[1]))
+                .sorted(NEWEST_FIRST)
+                .limit(size + 1L)
+                .toList();
+        if (rows.size() <= size) return new Page(rows, null);
+        List<Order> items = rows.subList(0, size);
+        return new Page(List.copyOf(items), encodeCursor(items.get(size - 1)));
+    }
+
+    static String encodeCursor(Order last) {
+        return last.createdAt() + ":" + last.id();
+    }
+
+    static long[] decodeCursor(String cursor) {
+        String[] parts = cursor == null ? new String[0] : cursor.split(":");
+        if (parts.length != 2) throw new IllegalArgumentException("Cursor không hợp lệ: " + cursor);
+        try {
+            return new long[]{Long.parseLong(parts[0]), Long.parseLong(parts[1])};
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Cursor không hợp lệ: " + cursor, e);
+        }
+    }
+}

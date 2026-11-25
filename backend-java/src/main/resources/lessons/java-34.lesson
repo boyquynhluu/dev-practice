@@ -1,0 +1,99 @@
+%%% meta
+id: java-34
+title: AWS — VPC, EC2, security group, S3 presigned URL và chi phí
+level: intermediate
+topic: AWS
+order: 34
+%%% theory
+## VPC: mạng riêng của bạn
+
+```
+VPC 10.0.0.0/16 (một region, trải trên nhiều AZ)
+├── Public subnet  10.0.1.0/24 (AZ-a) ── route 0.0.0.0/0 → Internet Gateway
+│     └── ALB, NAT Gateway, bastion
+├── Private subnet 10.0.11.0/24 (AZ-a) ── route 0.0.0.0/0 → NAT Gateway (chỉ đi ra)
+│     └── EC2/ECS chạy ứng dụng
+└── Private subnet 10.0.21.0/24 (AZ-a) ── không có route ra Internet
+      └── RDS, ElastiCache
+(lặp lại cho AZ-b để có HA)
+```
+
+- **Public subnet** có route tới Internet Gateway. Chỉ đặt ở đây những thứ phải nhận traffic từ Internet, như load balancer.
+- **Private subnet**: ứng dụng và DB **không có IP public**. Muốn gọi ra ngoài (API đối tác, tải gói cài đặt) thì đi qua **NAT Gateway**. Lưu ý NAT Gateway tính tiền theo giờ và theo GB.
+- **VPC Endpoint** (Gateway endpoint cho S3 và DynamoDB miễn phí): gọi S3 không phải đi qua NAT, vừa rẻ hơn vừa không ra Internet.
+
+## Security group và NACL
+
+| | Security group | Network ACL |
+|---|---|---|
+| Gắn vào | ENI / instance | Subnet |
+| Trạng thái | **Stateful**: chiều trả về tự được cho phép | Stateless: phải mở cả hai chiều |
+| Quy tắc | Chỉ có **allow** | Có cả allow và deny, xét theo số thứ tự |
+
+Mẹo: SG có thể **tham chiếu tới SG khác**. Ví dụ `sg-db` chỉ cho phép cổng 3306 **từ `sg-app`**. Như vậy không cần ghi dải IP, autoscale thêm instance vẫn đúng.
+
+Cấu hình tối thiểu: ALB mở 443 cho 0.0.0.0/0, app mở 8080 chỉ từ `sg-alb`, DB mở 3306 chỉ từ `sg-app`. **Không bao giờ** mở 22 hay 3306 cho 0.0.0.0/0. Thay vì SSH, hãy dùng **SSM Session Manager**.
+
+## EC2
+
+- Chọn loại máy theo tải: `t4g` (burstable, có CPU credit), `m7g` (cân bằng), `c7g` (nặng CPU), `r7g` (nặng RAM). Dòng `g` dùng chip Graviton (ARM), rẻ hơn khoảng 20% và chạy Java tốt.
+- Gắn **IAM Role** (instance profile) cho máy, **không** đặt access key trong file cấu hình. SDK tự lấy credential tạm thời.
+- Dùng **Auto Scaling Group** trải trên nhiều AZ, phía sau là ALB có health check.
+
+## S3 và presigned URL
+
+S3 là object storage: bền 99,999999999%, không giới hạn dung lượng. Bucket để **private** (bật Block Public Access).
+
+**Presigned URL** cho phép client upload hoặc tải **thẳng với S3**, file không đi qua server của bạn:
+
+```java
+PutObjectPresignRequest req = PutObjectPresignRequest.builder()
+        .signatureDuration(Duration.ofMinutes(5))
+        .putObjectRequest(b -> b.bucket("my-uploads").key("avatars/" + userId + ".png").contentType("image/png"))
+        .build();
+String url = presigner.presignPutObject(req).url().toString();   // trả cho frontend
+```
+
+- URL có **hạn ngắn** và chỉ dùng cho **đúng một key và một thao tác**. Key do **server tự sinh** (không lấy tên file của client), để không ai ghi đè được file của người khác.
+- Sau khi upload xong, client báo lại cho server để lưu metadata. Có thể kiểm tra file bằng S3 Event và Lambda.
+- Cấu hình CORS cho bucket nếu trình duyệt upload trực tiếp.
+
+## Chi phí: những khoản hay bị bỏ quên
+
+- **Data transfer**: traffic ra Internet, traffic giữa các AZ, và **NAT Gateway** (tính theo GB đi qua).
+- EBS volume và snapshot bị bỏ quên, Elastic IP không gắn vào máy nào.
+- Log CloudWatch không đặt thời hạn lưu.
+- Tiết kiệm: chọn đúng kích thước máy (right-sizing), dùng Graviton, Savings Plans hoặc Reserved cho tải ổn định, **Spot** cho batch hoặc CI, S3 lifecycle chuyển dữ liệu sang IA/Glacier. Bật **AWS Budgets** để có cảnh báo chi phí.
+- Khi review kiến trúc, dùng **Well-Architected Framework** với 6 trụ cột: Operational excellence, Security, Reliability, Performance, Cost, Sustainability.
+%%% quiz
+? Ứng dụng chạy trong private subnet cần gọi API đối tác trên Internet. Cần gì?
+- Gắn IP public cho instance
+* Route 0.0.0.0/0 qua NAT Gateway đặt trong public subnet
+- Mở security group cổng 443 inbound
+? Security group "stateful" nghĩa là gì?
+* Đã cho phép chiều đi thì chiều trả về tự được cho phép, không cần thêm quy tắc
+- Lưu lại lịch sử kết nối
+- Chỉ có quy tắc deny
+? Cách đúng để chỉ app được kết nối tới RDS là gì?
+- Mở 3306 cho 0.0.0.0/0 rồi đặt mật khẩu mạnh
+* Inbound 3306 của `sg-db` chỉ cho nguồn là `sg-app`
+- Đặt RDS trong public subnet
+? Vì sao dùng presigned URL để upload file lên S3?
+* Client upload thẳng lên S3 nên server không tốn băng thông. URL có hạn ngắn và chỉ dùng cho đúng một key
+- Để file được công khai
+- Vì S3 không có API
+? EC2 cần đọc S3. Cách cấp quyền an toàn là gì?
+- Đặt access key trong application.yml
+* Gắn IAM Role (instance profile) với quyền tối thiểu
+- Dùng tài khoản root
+? Khoản chi phí nào thường bị bất ngờ trong kiến trúc có private subnet?
+* NAT Gateway, tính theo giờ và theo GB dữ liệu đi qua
+- Security group
+- IAM user
+%%% hints
+- Vẽ VPC 2 AZ cho project này: ALB ở public subnet, ECS hoặc EC2 ở private subnet, RDS MySQL ở private subnet. Ghi quy tắc cho từng security group.
+- Dùng LocalStack (`localstack/localstack`) để thử S3 ngay trên máy: tạo bucket, sinh presigned PUT URL bằng AWS SDK v2, rồi upload bằng `curl -X PUT --upload-file`.
+- Mở AWS Pricing Calculator, ước tính chi phí hằng tháng cho 2 instance `t4g.small`, một RDS `db.t4g.micro` Multi-AZ và một NAT Gateway truyền 100 GB.
+%%% starter
+%%% tests
+%%% solution

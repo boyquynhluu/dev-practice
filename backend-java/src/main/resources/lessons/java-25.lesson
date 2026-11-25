@@ -1,0 +1,337 @@
+%%% meta
+id: java-25
+title: DDD — Aggregate, invariant và domain event
+level: advanced
+topic: DDD
+order: 25
+%%% theory
+## Bounded context và ubiquitous language
+
+DDD bắt đầu từ việc **chia miền nghiệp vụ** thành các **bounded context**, ví dụ *Ordering*, *Billing* và *Shipping*. Mỗi context có mô hình và **ngôn ngữ chung** (ubiquitous language) riêng. "Order" trong Ordering là giỏ hàng đã chốt. "Order" trong Shipping là một kiện hàng cần giao. Đừng cố gộp hai thứ này thành một class `Order` khổng lồ dùng chung cho cả hệ thống.
+
+## Các khối xây dựng (tactical design)
+
+| Khối | Đặc điểm | Ví dụ |
+|---|---|---|
+| **Entity** | Có định danh, trạng thái thay đổi theo thời gian | `Order#A-1001` |
+| **Value object** | Không có định danh, **bất biến**, so sánh theo giá trị | `Money(150000)`, `Address` |
+| **Aggregate** | Một cụm entity và value object với **một root**, là ranh giới nhất quán | `Order` và các `OrderLine` |
+| **Domain event** | Sự kiện đã xảy ra, đặt tên ở thì quá khứ | `OrderPlaced` |
+| **Repository** | Lưu và nạp **cả aggregate** | `OrderRepository.save(order)` |
+
+## Aggregate và invariant
+
+**Invariant** là quy tắc nghiệp vụ **luôn phải đúng**. Ví dụ: đơn đã đặt thì không được sửa dòng hàng, số lượng mỗi dòng từ 1 tới 100, không đặt được đơn rỗng.
+
+Quy tắc của aggregate:
+1. **Chỉ thay đổi qua aggregate root.** Bên ngoài không được lấy `order.lines()` ra rồi `add` trực tiếp. Getter phải trả bản sao chỉ đọc.
+2. **Root tự kiểm tra invariant** trong từng method nghiệp vụ, như `addLine`, `place` và `cancel`. Không có setter tuỳ ý. Kiểu thiết kế ngược lại, nơi object chỉ có getter/setter còn mọi quy tắc nằm rải rác trong service, gọi là **anemic model**.
+3. **Mỗi transaction chỉ sửa một aggregate.** Aggregate khác thì tham chiếu **bằng id** (`customerId`), không giữ object. Nhất quán giữa nhiều aggregate thì làm qua domain event, chấp nhận eventual consistency.
+4. **Aggregate nên nhỏ.** Aggregate càng lớn thì càng dễ tranh chấp khoá và tốn công nạp.
+
+```java
+order.addLine("SKU-1", 2, Money.of(50_000));   // root kiểm tra trạng thái và số lượng
+order.place();                                 // ghi nhận sự kiện OrderPlaced
+repo.save(order);
+events.publishAll(order.pullEvents());         // thường đi qua outbox
+```
+
+## Bài tập
+
+Cài aggregate `Order`: trạng thái DRAFT → PLACED → CANCELLED, các invariant về dòng hàng, tổng tiền bằng value object `Money`, và domain event `OrderPlaced`/`OrderCancelled`. Mọi vi phạm đều ném `DomainException`.
+%%% quiz
+? Điểm khác biệt chính giữa value object và entity là gì?
+* Value object không có định danh, bất biến và so sánh theo giá trị
+- Value object luôn được lưu ở bảng riêng
+- Entity không được có method
+? Code bên ngoài gọi `order.lines().add(...)` và thêm được dòng vào đơn đã PLACED. Lỗi thiết kế ở đâu?
+- Thiếu `@Transactional`
+* Root để lộ collection có thể sửa được, nên bên ngoài đi vòng qua được invariant
+- Không có lỗi gì
+? Aggregate `Order` cần biết khách hàng. Cách được khuyến nghị là gì?
+- Giữ nguyên object `Customer` bên trong Order
+* Chỉ lưu `customerId`
+- Gộp Customer vào aggregate Order
+? Đặt tên domain event thế nào cho đúng?
+- `PlaceOrder`
+* `OrderPlaced`
+- `OrderPlacingHandler`
+%%% hints
+- Luôn gọi `requireDraft()` ở đầu `addLine` và `removeLine`: nếu `status != DRAFT` thì ném `DomainException`.
+- `addLine`: kiểm tra `1 <= qty <= 100`. Nếu SKU đã có thì gộp số lượng (tổng vẫn ≤ 100). Nếu là SKU mới thì kiểm tra số dòng < 10. Giữ dòng hàng trong một `LinkedHashMap<String, OrderLine>` để giữ thứ tự.
+- `place()`: chỉ khi đang DRAFT và có ít nhất 1 dòng. Đổi status rồi `events.add(new OrderPlaced(id, total()))`.
+- `cancel()`: được huỷ từ DRAFT hoặc PLACED. Đơn đã CANCELLED thì ném lỗi. Ghi sự kiện `OrderCancelled`.
+- `lines()` trả `List.copyOf(...)`. `pullEvents()` sao chép danh sách sự kiện, xoá danh sách gốc, rồi trả bản sao.
+%%% starter
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+class DomainException extends RuntimeException {
+    DomainException(String message) { super(message); }
+}
+
+/** Value object: bất biến, so sánh theo giá trị (record). */
+record Money(long amount) {
+    Money {
+        if (amount < 0) throw new DomainException("Tiền không được âm");
+    }
+
+    static Money of(long amount) { return new Money(amount); }
+
+    Money plus(Money other) { return new Money(amount + other.amount); }
+
+    Money times(int n) { return new Money(amount * n); }
+}
+
+record OrderLine(String sku, int qty, Money unitPrice) {
+    Money subtotal() { return unitPrice.times(qty); }
+}
+
+enum OrderStatus { DRAFT, PLACED, CANCELLED }
+
+record OrderPlaced(String orderId, Money total) {
+}
+
+record OrderCancelled(String orderId) {
+}
+
+/**
+ * Aggregate root. Invariant:
+ * - Chỉ sửa dòng hàng khi DRAFT; qty mỗi dòng 1..100 (gộp cùng SKU, tổng vẫn ≤ 100); tối đa 10 SKU.
+ * - place(): chỉ từ DRAFT và phải có ≥ 1 dòng → ghi OrderPlaced.
+ * - cancel(): từ DRAFT hoặc PLACED → CANCELLED, ghi OrderCancelled; đã huỷ thì không làm gì được nữa.
+ * Vi phạm → DomainException.
+ */
+class Order {
+    private final String id;
+    private final String customerId;
+    private OrderStatus status = OrderStatus.DRAFT;
+    private final List<OrderLine> lines = new ArrayList<>();
+    private final List<Object> events = new ArrayList<>();
+
+    private Order(String id, String customerId) {
+        this.id = id;
+        this.customerId = customerId;
+    }
+
+    static Order create(String id, String customerId) {
+        return new Order(id, customerId);
+    }
+
+    void addLine(String sku, int qty, Money unitPrice) {
+        lines.add(new OrderLine(sku, qty, unitPrice)); // TODO: invariant
+    }
+
+    void removeLine(String sku) {
+        lines.removeIf(l -> l.sku().equals(sku)); // TODO: invariant
+    }
+
+    void place() {
+        status = OrderStatus.PLACED; // TODO: invariant + event
+    }
+
+    void cancel() {
+        status = OrderStatus.CANCELLED; // TODO: invariant + event
+    }
+
+    Money total() {
+        return Money.of(0); // TODO
+    }
+
+    List<OrderLine> lines() { return lines; } // TODO: đừng để lộ list nội bộ
+
+    /** Lấy các domain event chưa phát và xoá khỏi aggregate. */
+    List<Object> pullEvents() {
+        return List.of(); // TODO
+    }
+
+    String id() { return id; }
+
+    String customerId() { return customerId; }
+
+    OrderStatus status() { return status; }
+}
+%%% tests
+import java.util.List;
+
+class Tests {
+    static Order draft() {
+        Order o = Order.create("A-1", "C-9");
+        o.addLine("SKU-1", 2, Money.of(50_000));
+        return o;
+    }
+
+    static void run(T t) {
+        t.test("tổng tiền và gộp cùng SKU", () -> {
+            Order o = draft();
+            o.addLine("SKU-2", 1, Money.of(30_000));
+            o.addLine("SKU-1", 3, Money.of(50_000));
+            T.eq(Money.of(280_000), o.total());
+            T.eq(2, o.lines().size());
+            T.eq(5, o.lines().get(0).qty());
+        });
+        t.test("qty phải 1..100 (kể cả sau khi gộp)", () -> {
+            Order o = draft();
+            T.throwsEx(DomainException.class, () -> o.addLine("SKU-9", 0, Money.of(1)));
+            T.throwsEx(DomainException.class, () -> o.addLine("SKU-9", 101, Money.of(1)));
+            T.throwsEx(DomainException.class, () -> o.addLine("SKU-1", 99, Money.of(50_000)));
+            T.eq(2, o.lines().get(0).qty());
+        });
+        t.test("tối đa 10 SKU", () -> {
+            Order o = Order.create("A-2", "C-1");
+            for (int i = 0; i < 10; i++) o.addLine("S" + i, 1, Money.of(1));
+            T.throwsEx(DomainException.class, () -> o.addLine("S10", 1, Money.of(1)));
+            o.addLine("S3", 1, Money.of(1)); // SKU đã có thì vẫn gộp được
+            T.eq(10, o.lines().size());
+        });
+        t.test("lines() không cho sửa từ bên ngoài", () -> {
+            Order o = draft();
+            try {
+                o.lines().add(new OrderLine("HACK", 1, Money.of(0)));
+            } catch (UnsupportedOperationException expected) {
+                // ok
+            }
+            T.eq(1, o.lines().size());
+        });
+        t.test("không đặt được đơn rỗng", () ->
+                T.throwsEx(DomainException.class, () -> Order.create("A-3", "C-1").place()));
+        t.test("đặt đơn → PLACED, ghi OrderPlaced; pullEvents xoá sự kiện", () -> {
+            Order o = draft();
+            o.place();
+            T.eq(OrderStatus.PLACED, o.status());
+            T.eq(List.of(new OrderPlaced("A-1", Money.of(100_000))), o.pullEvents());
+            T.eq(List.of(), o.pullEvents());
+        });
+        t.test("đơn đã đặt thì không sửa dòng hàng, không đặt lại", () -> {
+            Order o = draft();
+            o.place();
+            T.throwsEx(DomainException.class, () -> o.addLine("SKU-2", 1, Money.of(1)));
+            T.throwsEx(DomainException.class, () -> o.removeLine("SKU-1"));
+            T.throwsEx(DomainException.class, o::place);
+            T.eq(1, o.lines().size());
+        });
+        t.test("huỷ đơn: ghi OrderCancelled, sau đó không làm gì được nữa", () -> {
+            Order o = draft();
+            o.place();
+            o.pullEvents();
+            o.cancel();
+            T.eq(OrderStatus.CANCELLED, o.status());
+            T.eq(List.of(new OrderCancelled("A-1")), o.pullEvents());
+            T.throwsEx(DomainException.class, o::cancel);
+            T.throwsEx(DomainException.class, o::place);
+        });
+        t.test("Money là value object: bằng nhau theo giá trị, không âm", () -> {
+            T.eq(Money.of(5), Money.of(2).plus(Money.of(3)));
+            T.throwsEx(DomainException.class, () -> Money.of(-1));
+        });
+    }
+}
+%%% solution
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+class DomainException extends RuntimeException {
+    DomainException(String message) { super(message); }
+}
+
+record Money(long amount) {
+    Money {
+        if (amount < 0) throw new DomainException("Tiền không được âm");
+    }
+
+    static Money of(long amount) { return new Money(amount); }
+
+    Money plus(Money other) { return new Money(amount + other.amount); }
+
+    Money times(int n) { return new Money(amount * n); }
+}
+
+record OrderLine(String sku, int qty, Money unitPrice) {
+    Money subtotal() { return unitPrice.times(qty); }
+}
+
+enum OrderStatus { DRAFT, PLACED, CANCELLED }
+
+record OrderPlaced(String orderId, Money total) {
+}
+
+record OrderCancelled(String orderId) {
+}
+
+class Order {
+    static final int MAX_QTY = 100;
+    static final int MAX_LINES = 10;
+
+    private final String id;
+    private final String customerId;
+    private OrderStatus status = OrderStatus.DRAFT;
+    private final Map<String, OrderLine> lines = new LinkedHashMap<>();
+    private final List<Object> events = new ArrayList<>();
+
+    private Order(String id, String customerId) {
+        this.id = id;
+        this.customerId = customerId;
+    }
+
+    static Order create(String id, String customerId) {
+        return new Order(id, customerId);
+    }
+
+    void addLine(String sku, int qty, Money unitPrice) {
+        requireDraft();
+        if (qty < 1 || qty > MAX_QTY) throw new DomainException("Số lượng phải từ 1 tới " + MAX_QTY);
+        OrderLine existing = lines.get(sku);
+        if (existing == null) {
+            if (lines.size() >= MAX_LINES) throw new DomainException("Tối đa " + MAX_LINES + " mặt hàng");
+            lines.put(sku, new OrderLine(sku, qty, unitPrice));
+            return;
+        }
+        int merged = existing.qty() + qty;
+        if (merged > MAX_QTY) throw new DomainException("Số lượng " + sku + " vượt " + MAX_QTY);
+        lines.put(sku, new OrderLine(sku, merged, existing.unitPrice()));
+    }
+
+    void removeLine(String sku) {
+        requireDraft();
+        lines.remove(sku);
+    }
+
+    void place() {
+        requireDraft();
+        if (lines.isEmpty()) throw new DomainException("Không đặt được đơn rỗng");
+        status = OrderStatus.PLACED;
+        events.add(new OrderPlaced(id, total()));
+    }
+
+    void cancel() {
+        if (status == OrderStatus.CANCELLED) throw new DomainException("Đơn đã huỷ");
+        status = OrderStatus.CANCELLED;
+        events.add(new OrderCancelled(id));
+    }
+
+    Money total() {
+        return lines.values().stream().map(OrderLine::subtotal).reduce(Money.of(0), Money::plus);
+    }
+
+    List<OrderLine> lines() { return List.copyOf(lines.values()); }
+
+    List<Object> pullEvents() {
+        List<Object> out = List.copyOf(events);
+        events.clear();
+        return out;
+    }
+
+    private void requireDraft() {
+        if (status != OrderStatus.DRAFT) throw new DomainException("Đơn " + id + " đang " + status + ", không sửa được");
+    }
+
+    String id() { return id; }
+
+    String customerId() { return customerId; }
+
+    OrderStatus status() { return status; }
+}

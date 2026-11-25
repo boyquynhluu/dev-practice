@@ -1,0 +1,244 @@
+%%% meta
+id: py-08
+title: Context manager — with, transaction, dọn dẹp tài nguyên
+level: intermediate
+topic: Tài nguyên
+order: 8
+%%% theory
+## `with` đảm bảo luôn có bước dọn dẹp
+
+```python
+with open("a.txt") as f:      # __enter__ trả f
+    data = f.read()
+# __exit__ được gọi kể cả khi có exception, nên file luôn được đóng
+```
+
+## Viết bằng class
+
+```python
+class Timer:
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self                          # giá trị gán cho biến sau `as`
+    def __exit__(self, exc_type, exc, tb):
+        self.elapsed = time.perf_counter() - self.start
+        return False                         # False: không nuốt exception
+```
+
+Nếu `__exit__` trả về `True`, exception sẽ bị **nuốt**. Chỉ làm vậy khi bạn thực sự muốn bỏ qua lỗi đó.
+
+## Viết bằng generator: `@contextmanager`
+
+```python
+from contextlib import contextmanager
+
+@contextmanager
+def transaction(conn):
+    conn.begin()
+    try:
+        yield conn            # thân khối `with` chạy tại đây
+    except Exception:
+        conn.rollback()
+        raise                 # ném lại cho nơi gọi biết
+    else:
+        conn.commit()
+```
+
+Đây đúng là cách các ORM (SQLAlchemy `session.begin()`, Django `transaction.atomic()`) cài đặt transaction.
+
+## Khôi phục trạng thái
+
+Thay đổi tạm thời trạng thái toàn cục (biến môi trường, cấu hình, thư mục hiện tại) trong test thì **phải khôi phục**, kể cả khi test lỗi. Nếu không, test sau sẽ chạy sai theo. Context manager là công cụ đúng cho việc này.
+%%% quiz
+? `__exit__` trả về True thì điều gì xảy ra?
+- Khối with chạy lại
+* Exception trong khối with bị nuốt
+- Không có gì khác
+? Trong `@contextmanager`, code sau `yield` chạy lúc nào?
+* Khi khối with kết thúc
+- Trước khối with
+- Không bao giờ
+%%% hints
+- Timer: `__exit__` tính `elapsed_ms` rồi `return False`.
+- transaction: dùng `try / except Exception: rollback; raise / else: commit`.
+- temp_env: lưu lại `old = {k: os.environ.get(k) for k in vars}`; trong `finally`, khôi phục: giá trị cũ là None thì `os.environ.pop(k, None)`, ngược lại gán lại giá trị cũ.
+- suppress_and_log: class có `__exit__` trả `True` khi `exc_type` là lớp con của các lỗi được phép bỏ qua.
+%%% starter
+import os
+import time
+from contextlib import contextmanager
+
+
+class Timer:
+    """with Timer() as t: ... ; t.elapsed_ms (float)"""
+    pass  # TODO
+
+
+@contextmanager
+def transaction(conn):
+    """begin; thành công -> commit; exception -> rollback rồi ném lại."""
+    yield conn  # TODO
+
+
+@contextmanager
+def temp_env(**values):
+    """Tạm đặt biến môi trường, ra khỏi with thì khôi phục (kể cả xoá biến mới thêm)."""
+    yield  # TODO
+
+
+class suppress_and_log:
+    """Bỏ qua các exception thuộc `exceptions`, ghi str(lỗi) vào `log` (list)."""
+
+    def __init__(self, *exceptions, log: list):
+        self.exceptions, self.log = exceptions, log
+
+    # TODO: __enter__, __exit__
+%%% tests
+import os
+import time
+
+from checker import test, eq, ok, raises
+from solution import *
+
+
+class FakeConn:
+    def __init__(self):
+        self.events = []
+
+    def begin(self):
+        self.events.append("begin")
+
+    def commit(self):
+        self.events.append("commit")
+
+    def rollback(self):
+        self.events.append("rollback")
+
+
+@test("Timer đo thời gian")
+def _():
+    with Timer() as t:
+        time.sleep(0.05)
+    ok(40 <= t.elapsed_ms < 1000, f"elapsed_ms = {getattr(t, 'elapsed_ms', None)}")
+
+
+@test("Timer không nuốt exception")
+def _():
+    def body():
+        with Timer():
+            raise KeyError("x")
+    raises(KeyError, body)
+
+
+@test("transaction commit khi thành công")
+def _():
+    c = FakeConn()
+    with transaction(c) as tx:
+        ok(tx is c, "phải yield chính conn")
+        c.events.append("insert")
+    eq(["begin", "insert", "commit"], c.events)
+
+
+@test("transaction rollback + ném lại khi lỗi")
+def _():
+    c = FakeConn()
+
+    def body():
+        with transaction(c):
+            c.events.append("insert")
+            raise ValueError("vi phạm ràng buộc")
+
+    raises(ValueError, body)
+    eq(["begin", "insert", "rollback"], c.events)
+
+
+@test("temp_env đặt rồi khôi phục")
+def _():
+    os.environ["APP_MODE"] = "dev"
+    os.environ.pop("NEW_VAR", None)
+    with temp_env(APP_MODE="test", NEW_VAR="1"):
+        eq("test", os.environ["APP_MODE"])
+        eq("1", os.environ["NEW_VAR"])
+    eq("dev", os.environ["APP_MODE"])
+    ok("NEW_VAR" not in os.environ, "biến mới phải bị xoá")
+
+
+@test("temp_env khôi phục kể cả khi lỗi")
+def _():
+    os.environ["APP_MODE"] = "dev"
+
+    def body():
+        with temp_env(APP_MODE="x"):
+            raise RuntimeError()
+
+    raises(RuntimeError, body)
+    eq("dev", os.environ["APP_MODE"])
+
+
+@test("suppress_and_log")
+def _():
+    log = []
+    with suppress_and_log(KeyError, ZeroDivisionError, log=log):
+        1 / 0
+    eq(1, len(log))
+
+    def body():
+        with suppress_and_log(KeyError, log=log):
+            raise ValueError("không được nuốt")
+
+    raises(ValueError, body)
+%%% solution
+import os
+import time
+from contextlib import contextmanager
+
+
+class Timer:
+    def __enter__(self):
+        self.start = time.perf_counter()
+        self.elapsed_ms = 0.0
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.elapsed_ms = (time.perf_counter() - self.start) * 1000
+        return False
+
+
+@contextmanager
+def transaction(conn):
+    conn.begin()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+
+
+@contextmanager
+def temp_env(**values):
+    old = {k: os.environ.get(k) for k in values}
+    os.environ.update({k: str(v) for k, v in values.items()})
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+class suppress_and_log:
+    def __init__(self, *exceptions, log: list):
+        self.exceptions, self.log = exceptions, log
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None and issubclass(exc_type, self.exceptions):
+            self.log.append(str(exc))
+            return True
+        return False

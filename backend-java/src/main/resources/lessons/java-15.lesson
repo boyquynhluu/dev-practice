@@ -1,0 +1,228 @@
+%%% meta
+id: java-15
+title: Circuit breaker — chống lỗi dây chuyền
+level: advanced
+topic: Hệ thống
+order: 15
+%%% theory
+## Lỗi dây chuyền (cascading failure)
+
+Service thanh toán chậm, mỗi lần gọi phải chờ timeout 5s. Thread của bạn bị giữ hết, nên đến cả các API không liên quan cũng treo theo. **Một service hỏng kéo sập cả hệ thống.**
+
+## Circuit breaker hoạt động như cầu dao điện
+
+```
+            lỗi liên tiếp >= threshold
+  CLOSED ─────────────────────────────▶ OPEN
+    ▲                                     │ hết openDuration
+    │ gọi thử thành công                  ▼
+    └──────────────────────────────── HALF_OPEN
+                 gọi thử lỗi ──▶ quay lại OPEN
+```
+
+- **CLOSED**: gọi bình thường và đếm số lỗi liên tiếp. Gặp một lần thành công thì reset bộ đếm.
+- **OPEN**: **fail fast**, tức là ném lỗi ngay mà không gọi service. Service hỏng có thời gian hồi phục, còn hệ thống của bạn không phải chờ.
+- **HALF_OPEN**: cho **một** lần gọi thử. Thành công thì về CLOSED, lỗi thì về OPEN.
+
+## Fallback
+
+Khi mạch mở, trả về một giá trị dự phòng: dữ liệu cache, giá trị mặc định, hoặc thông báo "tính năng tạm thời gián đoạn". Đó là **graceful degradation**: hệ thống xuống cấp từ từ chứ không sập hẳn.
+
+## Thực tế
+
+Dùng **Resilience4j** (`@CircuitBreaker`, `@Retry`, `@TimeLimiter`, `@Bulkhead`) trong Spring Boot. Viết tay một lần để hiểu các tham số: threshold, cửa sổ đếm lỗi, thời gian mở, số lần gọi thử.
+
+> Kết hợp với bài trước: **timeout → retry (vài lần) → circuit breaker → fallback**.
+%%% quiz
+? Ở trạng thái OPEN, gọi `call()` thì…
+- vẫn gọi service nhưng bỏ qua kết quả
+* ném lỗi ngay, không gọi service
+- chờ đến khi service sống lại
+? Từ HALF_OPEN, lần gọi thử bị lỗi thì sang trạng thái nào?
+- CLOSED
+* OPEN
+- HALF_OPEN
+%%% hints
+- Lưu `state`, `failures`, `openedAt`. Ở đầu `call()`: nếu OPEN và `now - openedAt >= openMillis` thì chuyển HALF_OPEN.
+- OPEN → ném `CircuitOpenException` mà không gọi supplier.
+- Bọc lời gọi supplier trong try/catch: thành công thì `failures = 0; state = CLOSED`; lỗi thì tăng `failures`, và nếu đang HALF_OPEN hoặc `failures >= threshold` thì mở mạch. Sau đó ném lại lỗi gốc.
+- `callOrFallback`: bắt mọi `RuntimeException` (kể cả CircuitOpenException) rồi trả `fallback.get()`.
+%%% starter
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+enum State { CLOSED, OPEN, HALF_OPEN }
+
+class CircuitOpenException extends RuntimeException {
+    CircuitOpenException() { super("Circuit đang mở, thử lại sau"); }
+}
+
+class CircuitBreaker {
+    private final int failureThreshold;
+    private final long openMillis;
+    private final LongSupplier clock;
+
+    CircuitBreaker(int failureThreshold, long openMillis, LongSupplier clock) {
+        this.failureThreshold = failureThreshold;
+        this.openMillis = openMillis;
+        this.clock = clock;
+    }
+
+    State state() {
+        return State.CLOSED; // TODO (nhớ: OPEN quá openMillis thì xem như HALF_OPEN)
+    }
+
+    <T> T call(Supplier<T> action) {
+        return action.get(); // TODO
+    }
+
+    <T> T callOrFallback(Supplier<T> action, Supplier<T> fallback) {
+        return action.get(); // TODO
+    }
+}
+%%% tests
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+
+class Tests {
+    static final class FakeClock implements java.util.function.LongSupplier {
+        long now = 0;
+
+        public long getAsLong() { return now; }
+    }
+
+    static Supplier<String> failing(AtomicInteger calls) {
+        return () -> {
+            calls.incrementAndGet();
+            throw new IllegalStateException("payment down");
+        };
+    }
+
+    static void tripOpen(CircuitBreaker cb, int n) {
+        AtomicInteger dummy = new AtomicInteger();
+        for (int i = 0; i < n; i++) {
+            try {
+                cb.call(failing(dummy));
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    static void run(T t) {
+        t.test("CLOSED: gọi bình thường, lỗi gốc được ném lại", () -> {
+            CircuitBreaker cb = new CircuitBreaker(3, 1000, new FakeClock());
+            T.eq("ok", cb.call(() -> "ok"));
+            T.throwsEx(IllegalStateException.class, () -> cb.call(failing(new AtomicInteger())));
+            T.eq(State.CLOSED, cb.state());
+        });
+        t.test("đủ threshold lỗi liên tiếp -> OPEN", () -> {
+            CircuitBreaker cb = new CircuitBreaker(3, 1000, new FakeClock());
+            tripOpen(cb, 3);
+            T.eq(State.OPEN, cb.state());
+        });
+        t.test("thành công thì reset bộ đếm lỗi", () -> {
+            CircuitBreaker cb = new CircuitBreaker(3, 1000, new FakeClock());
+            tripOpen(cb, 2);
+            cb.call(() -> "ok");
+            tripOpen(cb, 2);
+            T.eq(State.CLOSED, cb.state());
+        });
+        t.test("OPEN: fail fast, KHÔNG gọi service", () -> {
+            CircuitBreaker cb = new CircuitBreaker(2, 1000, new FakeClock());
+            tripOpen(cb, 2);
+            AtomicInteger calls = new AtomicInteger();
+            T.throwsEx(CircuitOpenException.class, () -> cb.call(failing(calls)));
+            T.eq(0, calls.get());
+        });
+        t.test("hết openMillis -> HALF_OPEN, gọi thử thành công -> CLOSED", () -> {
+            FakeClock c = new FakeClock();
+            CircuitBreaker cb = new CircuitBreaker(2, 1000, c);
+            tripOpen(cb, 2);
+            c.now = 999;
+            T.eq(State.OPEN, cb.state());
+            c.now = 1000;
+            T.eq(State.HALF_OPEN, cb.state());
+            T.eq("hồi phục", cb.call(() -> "hồi phục"));
+            T.eq(State.CLOSED, cb.state());
+        });
+        t.test("HALF_OPEN gọi thử lỗi -> OPEN lại ngay (từ thời điểm mới)", () -> {
+            FakeClock c = new FakeClock();
+            CircuitBreaker cb = new CircuitBreaker(5, 1000, c);
+            tripOpen(cb, 5);
+            c.now = 1500;
+            tripOpen(cb, 1);
+            T.eq(State.OPEN, cb.state());
+            c.now = 2400;
+            T.eq(State.OPEN, cb.state());
+            c.now = 2500;
+            T.eq(State.HALF_OPEN, cb.state());
+        });
+        t.test("callOrFallback", () -> {
+            CircuitBreaker cb = new CircuitBreaker(1, 1000, new FakeClock());
+            T.eq("cache", cb.callOrFallback(failing(new AtomicInteger()), () -> "cache"));
+            AtomicInteger calls = new AtomicInteger();
+            T.eq("cache", cb.callOrFallback(failing(calls), () -> "cache"));
+            T.eq(0, calls.get());
+        });
+    }
+}
+%%% solution
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+enum State { CLOSED, OPEN, HALF_OPEN }
+
+class CircuitOpenException extends RuntimeException {
+    CircuitOpenException() { super("Circuit đang mở, thử lại sau"); }
+}
+
+class CircuitBreaker {
+    private final int failureThreshold;
+    private final long openMillis;
+    private final LongSupplier clock;
+    private State state = State.CLOSED;
+    private int failures;
+    private long openedAt;
+
+    CircuitBreaker(int failureThreshold, long openMillis, LongSupplier clock) {
+        this.failureThreshold = failureThreshold;
+        this.openMillis = openMillis;
+        this.clock = clock;
+    }
+
+    synchronized State state() {
+        if (state == State.OPEN && clock.getAsLong() - openedAt >= openMillis) state = State.HALF_OPEN;
+        return state;
+    }
+
+    <T> T call(Supplier<T> action) {
+        synchronized (this) {
+            if (state() == State.OPEN) throw new CircuitOpenException();
+        }
+        try {
+            T result = action.get();
+            synchronized (this) {
+                failures = 0;
+                state = State.CLOSED;
+            }
+            return result;
+        } catch (RuntimeException e) {
+            synchronized (this) {
+                failures++;
+                if (state == State.HALF_OPEN || failures >= failureThreshold) {
+                    state = State.OPEN;
+                    openedAt = clock.getAsLong();
+                }
+            }
+            throw e;
+        }
+    }
+
+    <T> T callOrFallback(Supplier<T> action, Supplier<T> fallback) {
+        try {
+            return call(action);
+        } catch (RuntimeException e) {
+            return fallback.get();
+        }
+    }
+}

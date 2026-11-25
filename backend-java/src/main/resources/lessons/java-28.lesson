@@ -1,0 +1,85 @@
+%%% meta
+id: java-28
+title: High Availability — Health check, failover, backup và RPO/RTO
+level: advanced
+topic: High Availability
+order: 28
+%%% theory
+## Availability tính bằng "số 9"
+
+| SLA | Thời gian chết tối đa mỗi năm | Mỗi tháng |
+|---|---|---|
+| 99% | 3,65 ngày | 7,2 giờ |
+| 99,9% | 8,76 giờ | 43 phút |
+| 99,99% | 52,6 phút | 4,3 phút |
+
+Các thành phần mắc **nối tiếp** thì availability nhân với nhau: 99,9% × 99,9% ≈ 99,8%. Muốn cao hơn thì phải **dư thừa** (redundancy): chạy song song N bản, mỗi bản thay thế được cho nhau.
+
+## Loại bỏ điểm lỗi duy nhất (SPOF)
+
+Đi dọc toàn bộ đường request: DNS → load balancer → app → cache → DB → ổ đĩa → vùng (AZ). Thành phần nào chỉ có **một** bản thì đó là SPOF.
+- App: ít nhất 2 instance, đặt ở **2 availability zone** khác nhau.
+- DB: primary và replica, có cơ chế **failover** tự động (RDS Multi-AZ, MySQL Group Replication, Patroni cho PostgreSQL).
+- Redis: Sentinel hoặc Cluster.
+- Đừng quên những thứ "ẩn": khoá API của bên thứ ba, chứng chỉ TLS sắp hết hạn, một job cron chỉ chạy trên một máy.
+
+## Health check: liveness và readiness
+
+| | Hỏi gì | Nếu fail |
+|---|---|---|
+| **Liveness** | Tiến trình còn sống không, hay đã treo (deadlock)? | **Restart** container |
+| **Readiness** | Đã sẵn sàng nhận traffic chưa (đã warm-up, đã kết nối được DB)? | **Ngừng gửi traffic** tới instance đó, không restart |
+
+Spring Boot Actuator: `/actuator/health/liveness` và `/actuator/health/readiness` (`management.endpoint.health.probes.enabled=true`).
+
+Bẫy hay gặp: đưa việc kiểm tra DB vào **liveness**. Khi DB chậm, mọi pod đều fail liveness và bị restart cùng lúc, biến sự cố nhỏ thành sập toàn bộ. Kiểm tra phụ thuộc bên ngoài chỉ nên nằm trong readiness, có khi không đưa vào luôn.
+
+## Failover
+
+- **Active-passive**: bản dự phòng đứng chờ, khi bản chính chết thì nó lên thay. Mất vài giây tới vài phút.
+- **Active-active**: mọi bản cùng phục vụ. Một bản chết thì load balancer bỏ nó ra. Với tầng ứng dụng stateless thì cách này đơn giản. Với DB thì khó hơn vì có xung đột khi ghi.
+- Ứng dụng phải chịu được lúc failover: connection pool tự kết nối lại, retry có backoff cho thao tác idempotent, timeout hợp lý.
+- **Split-brain**: hai node cùng tưởng mình là primary. Phòng bằng quorum (đa số phiếu) và fencing.
+
+## Backup, RPO và RTO
+
+- **RPO** (Recovery Point Objective): **mất tối đa bao nhiêu dữ liệu**, tính bằng thời gian. Backup mỗi đêm thì RPO tới 24 giờ. Có binlog hoặc WAL để khôi phục tới thời điểm bất kỳ (PITR) thì RPO chỉ còn vài phút.
+- **RTO** (Recovery Time Objective): **mất bao lâu để chạy lại được**.
+- Quy tắc **3-2-1**: 3 bản sao, trên 2 loại phương tiện, 1 bản để ở nơi khác (khác vùng hoặc khác tài khoản). Backup nên được mã hoá và bất biến (chống ransomware).
+- **Backup chưa thử restore thì không phải là backup.** Hãy diễn tập restore định kỳ (restore drill): khôi phục vào môi trường riêng, kiểm tra dữ liệu, đo thời gian thực tế rồi so với RTO.
+
+## Disaster recovery
+
+Có nhiều mức, từ rẻ và chậm tới đắt và nhanh: backup & restore → pilot light (chỉ chạy DB ở vùng phụ) → warm standby → multi-site active-active. Chọn mức nào thì dựa vào RPO và RTO mà nghiệp vụ yêu cầu.
+%%% quiz
+? Readiness probe fail thì Kubernetes làm gì?
+- Restart container
+* Ngừng gửi traffic tới pod đó cho tới khi pod sẵn sàng lại
+- Xoá deployment
+? Vì sao KHÔNG nên kiểm tra kết nối DB trong liveness probe?
+* Vì DB chậm thì mọi pod bị restart cùng lúc, biến sự cố nhỏ thành sập toàn hệ thống
+- Vì liveness không gọi được DB
+- Vì như vậy tốn connection
+? Hệ thống backup mỗi ngày lúc 2 giờ sáng, không có binlog. Sự cố lúc 23 giờ. RPO thực tế là bao nhiêu?
+- 2 giờ
+* Gần 21 giờ dữ liệu
+- 0
+? RTO đo cái gì?
+- Lượng dữ liệu bị mất
+* Thời gian để hệ thống hoạt động lại sau sự cố
+- Số lần restore mỗi năm
+? Hai dịch vụ nối tiếp, mỗi dịch vụ có availability 99,9%. Availability của cả hệ thống xấp xỉ bao nhiêu?
+- 99,9%
+* 99,8%
+- 99,99%
+? "Split-brain" trong failover là gì?
+* Hai node cùng tưởng mình là primary và cùng nhận ghi, gây xung đột dữ liệu
+- Dữ liệu bị chia đôi sang hai shard
+- CPU có hai nhân
+%%% hints
+- Bật probe trong Spring Boot: `management.endpoint.health.probes.enabled=true`. Gọi `/actuator/health/liveness` và `/actuator/health/readiness`, rồi tắt DB và xem trạng thái nào thay đổi.
+- Diễn tập restore: `mysqldump --single-transaction db > backup.sql`, xoá DB, khôi phục từ file và đo thời gian. Ghi lại RPO và RTO đạt được.
+- Liệt kê mọi SPOF trong hệ thống bạn đang làm, rồi đề xuất cách bỏ từng cái.
+%%% starter
+%%% tests
+%%% solution

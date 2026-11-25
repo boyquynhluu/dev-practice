@@ -1,0 +1,225 @@
+%%% meta
+id: fe-14
+title: Context, memo, useMemo, useCallback — tránh render thừa
+level: advanced
+topic: React
+order: 14
+%%% theory
+## Context: truyền dữ liệu xuyên cây component
+
+Context giúp tránh **prop drilling**, tức truyền một prop qua 5 tầng component không hề dùng tới nó.
+
+```jsx
+const ThemeContext = createContext(null);
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState('light');
+  const value = useMemo(() => ({ theme, toggle: () => setTheme((t) => (t === 'light' ? 'dark' : 'light')) }), [theme]);
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+function useTheme() {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme phải dùng bên trong ThemeProvider');
+  return ctx;
+}
+```
+
+Context hợp cho dữ liệu **ít thay đổi**: theme, user đăng nhập, ngôn ngữ. Mỗi khi `value` đổi, **mọi** component đang dùng context đó đều render lại.
+
+## Khi nào component render lại?
+
+Khi state của nó đổi, khi **component cha render lại**, hoặc khi context nó dùng thay đổi. Render lại không phải lúc nào cũng xấu, chỉ đáng lo khi phần đó **nặng**.
+
+## Ba công cụ đi cùng nhau
+
+```jsx
+const List = memo(function List({ items, onSelect }) { ... });   // bỏ qua render nếu props không đổi (so sánh nông)
+
+const visible = useMemo(() => items.filter((i) => i.name.includes(q)), [items, q]); // giữ CÙNG tham chiếu
+const onSelect = useCallback((id) => setSelected(id), []);                         // giữ CÙNG hàm
+```
+
+`memo` **vô tác dụng** nếu mỗi lần render bạn lại truyền vào một mảng hoặc hàm **mới**, vì `[] !== []`. Phải đi kèm `useMemo`/`useCallback` thì mới có ích.
+
+> Đừng memo mọi thứ. Đo bằng React DevTools Profiler trước, chỉ tối ưu ở chỗ thực sự chậm.
+%%% quiz
+? `memo(List)` nhưng mỗi lần render lại truyền `onSelect={() => ...}` thì sao?
+* List vẫn render lại vì mỗi lần là một hàm mới
+- List không render lại
+? Value của context là object tạo mới mỗi lần render thì sao?
+* Mọi component dùng context đó render lại mỗi khi Provider render
+- Không sao cả
+%%% hints
+- ThemeProvider: `useMemo` cho `value` với deps `[theme]`.
+- useTheme: nếu `useContext` trả về null thì throw Error.
+- ItemList: bọc bằng `memo(...)`.
+- Dashboard: `visible = useMemo(() => filter, [items, query])` và `onSelect = useCallback((id) => setSelected(id), [])`.
+%%% starter
+const renderCount = { list: 0 };
+
+const ThemeContext = createContext(null);
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState('light');
+  const value = { theme, toggle: () => setTheme((t) => (t === 'light' ? 'dark' : 'light')) }; // TODO
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+/** Ném Error('useTheme phải dùng bên trong ThemeProvider') nếu thiếu Provider */
+function useTheme() {
+  return useContext(ThemeContext); // TODO
+}
+
+function ThemeButton() {
+  const { theme, toggle } = useTheme();
+  return <button className="theme" onClick={toggle}>Theme: {theme}</button>;
+}
+
+function ItemList({ items, onSelect }) { // TODO: memo
+  renderCount.list++;
+  return <ul>{items.map((i) => <li key={i.id} onClick={() => onSelect(i.id)}>{i.name}</li>)}</ul>;
+}
+
+/** <input name="q"> lọc theo tên; <button className="tick">tick {n}</button> chỉ tăng bộ đếm;
+ *  <p className="selected">Đã chọn: {id}</p>. Bấm tick KHÔNG được render lại ItemList. */
+function Dashboard({ items }) {
+  const [query, setQuery] = useState('');
+  const [n, setN] = useState(0);
+  const [selected, setSelected] = useState(null);
+  const visible = items.filter((i) => i.name.toLowerCase().includes(query.toLowerCase())); // TODO
+  const onSelect = (id) => setSelected(id); // TODO
+  return (
+    <div>
+      <input name="q" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <button className="tick" onClick={() => setN(n + 1)}>tick {n}</button>
+      <p className="selected">Đã chọn: {selected ?? '-'}</p>
+      <ItemList items={visible} onSelect={onSelect} />
+    </div>
+  );
+}
+
+function App() {
+  const items = [{ id: 1, name: 'React' }, { id: 2, name: 'Redux' }, { id: 3, name: 'Vue' }];
+  return <ThemeProvider><ThemeButton /><Dashboard items={items} /></ThemeProvider>;
+}
+%%% tests
+const ITEMS = [{ id: 1, name: 'React' }, { id: 2, name: 'Redux' }, { id: 3, name: 'Vue' }];
+
+test('ThemeProvider + useTheme', async () => {
+  const { container } = await render(<ThemeProvider><ThemeButton /></ThemeProvider>);
+  expect($('.theme', container).textContent).toBe('Theme: light');
+  await click($('.theme', container));
+  expect($('.theme', container).textContent).toBe('Theme: dark');
+});
+
+test('useTheme ngoài Provider ném lỗi rõ ràng', () => {
+  let err = null;
+  function Probe() {
+    try {
+      useTheme();
+    } catch (e) {
+      err = e;
+    }
+    return null;
+  }
+  return render(<Probe />).then(() => {
+    expect(err?.message).toBe('useTheme phải dùng bên trong ThemeProvider');
+  });
+});
+
+test('value của context ổn định khi Provider render lại vì lý do khác', async () => {
+  const seen = [];
+  function Spy() {
+    seen.push(useContext(ThemeContext));
+    return null;
+  }
+  const MemoSpy = memo(Spy);
+  function Outer() {
+    const [x, setX] = useState(0);
+    return (
+      <ThemeProvider>
+        <button className="outer" onClick={() => setX(x + 1)}>{x}</button>
+        <MemoSpy />
+      </ThemeProvider>
+    );
+  }
+  const { container } = await render(<Outer />);
+  await click($('.outer', container));
+  expect(seen.length).toBe(1);
+});
+
+test('lọc theo tên', async () => {
+  const { container } = await render(<Dashboard items={ITEMS} />);
+  await type($('input[name="q"]', container), 're');
+  expect(all('li', container).map((li) => li.textContent)).toEqual(['React', 'Redux']);
+});
+
+test('bấm tick KHÔNG render lại ItemList', async () => {
+  const { container } = await render(<Dashboard items={ITEMS} />);
+  renderCount.list = 0;
+  await click($('.tick', container));
+  await click($('.tick', container));
+  expect($('.tick', container).textContent).toBe('tick 2');
+  expect(renderCount.list).toBe(0);
+});
+
+test('chọn item vẫn hoạt động, list chỉ render lại khi query đổi', async () => {
+  const { container } = await render(<Dashboard items={ITEMS} />);
+  renderCount.list = 0;
+  await click(getByText('Vue', container));
+  expect($('.selected', container).textContent).toBe('Đã chọn: 3');
+  expect(renderCount.list).toBe(0);
+  await type($('input[name="q"]', container), 'v');
+  expect(renderCount.list).toBe(1);
+});
+%%% solution
+const renderCount = { list: 0 };
+
+const ThemeContext = createContext(null);
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState('light');
+  const value = useMemo(() => ({ theme, toggle: () => setTheme((t) => (t === 'light' ? 'dark' : 'light')) }), [theme]);
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+function useTheme() {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme phải dùng bên trong ThemeProvider');
+  return ctx;
+}
+
+function ThemeButton() {
+  const { theme, toggle } = useTheme();
+  return <button className="theme" onClick={toggle}>Theme: {theme}</button>;
+}
+
+const ItemList = memo(function ItemList({ items, onSelect }) {
+  renderCount.list++;
+  return <ul>{items.map((i) => <li key={i.id} onClick={() => onSelect(i.id)}>{i.name}</li>)}</ul>;
+});
+
+function Dashboard({ items }) {
+  const [query, setQuery] = useState('');
+  const [n, setN] = useState(0);
+  const [selected, setSelected] = useState(null);
+  const visible = useMemo(
+    () => items.filter((i) => i.name.toLowerCase().includes(query.toLowerCase())),
+    [items, query],
+  );
+  const onSelect = useCallback((id) => setSelected(id), []);
+  return (
+    <div>
+      <input name="q" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <button className="tick" onClick={() => setN(n + 1)}>tick {n}</button>
+      <p className="selected">Đã chọn: {selected ?? '-'}</p>
+      <ItemList items={visible} onSelect={onSelect} />
+    </div>
+  );
+}
+
+function App() {
+  const items = [{ id: 1, name: 'React' }, { id: 2, name: 'Redux' }, { id: 3, name: 'Vue' }];
+  return <ThemeProvider><ThemeButton /><Dashboard items={items} /></ThemeProvider>;
+}

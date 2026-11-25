@@ -1,0 +1,165 @@
+%%% meta
+id: fe-09
+title: React — component, props, JSX, list và key
+level: intermediate
+topic: React
+order: 9
+%%% theory
+## Component là hàm: props vào, UI ra
+
+```jsx
+function ProductCard({ product, onAdd }) {
+  return (
+    <div className="card">
+      <h3>{product.name}</h3>
+      <p>{formatVnd(product.price)}</p>
+      <button onClick={() => onAdd(product.id)}>Thêm</button>
+    </div>
+  );
+}
+```
+
+- Tên component **viết hoa**: `<ProductCard />`. Tên viết thường như `<div>` là thẻ HTML.
+- **Props chỉ đọc**, component con không được sửa props. Muốn báo ngược lên cha thì gọi callback (`onAdd`).
+- JSX dùng `className` (không phải `class`), `htmlFor`, và các sự kiện viết camelCase (`onClick`).
+
+## Render có điều kiện
+
+```jsx
+{loading && <Spinner />}
+{error ? <Error msg={error} /> : <List items={items} />}
+{items.length === 0 && <p>Trống</p>}     // ⚠ đừng viết {items.length && ...}: khi rỗng sẽ in ra số 0
+```
+
+## List và key
+
+```jsx
+<ul>{items.map((it) => <li key={it.id}>{it.name}</li>)}</ul>
+```
+
+`key` giúp React biết phần tử nào được thêm, xoá hay đổi chỗ. Dùng **id ổn định**. Không dùng index khi danh sách có thể sắp xếp lại hoặc bị xoá bớt, vì state của các dòng sẽ bị lẫn sang nhau.
+
+## Định dạng tiền
+
+```js
+new Intl.NumberFormat('vi-VN').format(1500000) + ' ₫'   // "1.500.000 ₫"
+```
+
+## Trong bài này
+
+Bạn không cần `import React`, vì React và các hook đã có sẵn. Bấm **Chạy** để xem component `App` ở tab **Preview**.
+%%% quiz
+? `{items.length && <List />}` khi mảng rỗng sẽ hiển thị gì?
+- Không có gì
+* Số 0
+- Lỗi
+? Key tốt nhất cho một danh sách sản phẩm là gì?
+- index của map
+* product.id
+- Math.random()
+%%% hints
+- formatVnd: `` `${new Intl.NumberFormat('vi-VN').format(n)} ₫` ``.
+- ProductCard: nếu `product.stock === 0` thì `disabled` nút bấm và thêm `<span className="badge">Hết hàng</span>`.
+- ProductList: rỗng thì hiển thị `<p className="empty">Không có sản phẩm</p>`; ngược lại `map` ra từng `ProductCard` với `key={p.id}`.
+%%% starter
+function formatVnd(n) {
+  return String(n); // TODO: "1.500.000 ₫"
+}
+
+/** <div className="card" data-testid={`product-${id}`}>
+ *    <h3>{name}</h3> <p className="price">{formatVnd(price)}</p>
+ *    {hết hàng: <span className="badge">Hết hàng</span>}
+ *    <button onClick={() => onAdd(product.id)} disabled={hết hàng}>Thêm vào giỏ</button>
+ *  </div> */
+function ProductCard({ product, onAdd }) {
+  return <div className="card">{product.name}</div>; // TODO
+}
+
+/** Danh sách; mảng rỗng -> <p className="empty">Không có sản phẩm</p> */
+function ProductList({ products, onAdd }) {
+  return <div>TODO</div>;
+}
+
+function App() {
+  const products = [
+    { id: 1, name: 'Bàn phím cơ', price: 1500000, stock: 3 },
+    { id: 2, name: 'Chuột', price: 350000, stock: 0 },
+  ];
+  return <ProductList products={products} onAdd={(id) => console.log('thêm', id)} />;
+}
+%%% tests
+const P = [
+  { id: 1, name: 'Bàn phím cơ', price: 1500000, stock: 3 },
+  { id: 2, name: 'Chuột', price: 350000, stock: 0 },
+];
+
+test('formatVnd', () => {
+  expect(formatVnd(1500000)).toBe('1.500.000 ₫');
+  expect(formatVnd(0)).toBe('0 ₫');
+});
+
+test('ProductCard hiển thị tên, giá', async () => {
+  const { container } = await render(<ProductCard product={P[0]} onAdd={() => {}} />);
+  expect($('h3', container).textContent).toBe('Bàn phím cơ');
+  expect($('.price', container).textContent).toBe('1.500.000 ₫');
+  expect($('.badge', container)).toBeNull();
+});
+
+test('ProductCard gọi onAdd với id', async () => {
+  const onAdd = fn();
+  const { container } = await render(<ProductCard product={P[0]} onAdd={onAdd} />);
+  await click($('button', container));
+  expect(onAdd.calls).toEqual([[1]]);
+});
+
+test('Hết hàng: badge + nút disabled', async () => {
+  const onAdd = fn();
+  const { container } = await render(<ProductCard product={P[1]} onAdd={onAdd} />);
+  expect($('.badge', container).textContent).toBe('Hết hàng');
+  expect($('button', container).disabled).toBe(true);
+});
+
+test('ProductList render đủ card', async () => {
+  const { container } = await render(<ProductList products={P} onAdd={() => {}} />);
+  expect(all('.card', container)).toHaveLength(2);
+  expect($('[data-testid="product-2"] h3', container).textContent).toBe('Chuột');
+});
+
+test('ProductList rỗng (không in ra số 0)', async () => {
+  const { container } = await render(<ProductList products={[]} onAdd={() => {}} />);
+  expect($('.empty', container).textContent).toBe('Không có sản phẩm');
+  expect(container.textContent.includes('0')).toBe(false);
+});
+%%% solution
+function formatVnd(n) {
+  return `${new Intl.NumberFormat('vi-VN').format(n)} ₫`;
+}
+
+function ProductCard({ product, onAdd }) {
+  const soldOut = product.stock === 0;
+  return (
+    <div className="card" data-testid={`product-${product.id}`}>
+      <h3>{product.name}</h3>
+      <p className="price">{formatVnd(product.price)}</p>
+      {soldOut && <span className="badge">Hết hàng</span>}
+      <button type="button" onClick={() => onAdd(product.id)} disabled={soldOut}>Thêm vào giỏ</button>
+    </div>
+  );
+}
+
+function ProductList({ products, onAdd }) {
+  if (products.length === 0) return <p className="empty">Không có sản phẩm</p>;
+  return (
+    <div className="grid">
+      {products.map((p) => <ProductCard key={p.id} product={p} onAdd={onAdd} />)}
+    </div>
+  );
+}
+
+function App() {
+  const products = [
+    { id: 1, name: 'Bàn phím cơ', price: 1500000, stock: 3 },
+    { id: 2, name: 'Chuột', price: 350000, stock: 0 },
+  ];
+  return <ProductList products={products} onAdd={(id) => console.log('thêm', id)} />;
+}

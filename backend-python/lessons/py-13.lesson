@@ -1,0 +1,242 @@
+%%% meta
+id: py-13
+title: Threading — Lock, ThreadPoolExecutor, producer–consumer
+level: advanced
+topic: Concurrency
+order: 13
+%%% theory
+## GIL: hiểu đúng
+
+CPython có **GIL**: tại một thời điểm chỉ một thread được chạy bytecode Python.
+
+- Với **I/O** (gọi HTTP, DB, đọc file), thread nhả GIL trong lúc chờ, nên **threading vẫn tăng tốc tốt**.
+- Với **tính toán CPU**, nên dùng `multiprocessing` / `ProcessPoolExecutor`.
+- GIL **không** làm code của bạn tự thread-safe. `self.balance += x` gồm nhiều bytecode, và thread có thể bị chuyển ngay giữa chừng.
+
+## Lock
+
+```python
+import threading
+lock = threading.Lock()
+with lock:                 # chỉ một thread vào được đoạn này tại một thời điểm
+    self.balance += amount
+```
+
+## ThreadPoolExecutor
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=8) as pool:
+    results = list(pool.map(fetch, urls))      # giữ đúng thứ tự đầu vào
+```
+
+## Producer–consumer với `queue.Queue`
+
+`Queue` đã thread-safe sẵn. Producer `put` công việc vào queue, các worker `get` ra để xử lý. Để báo cho worker biết không còn việc, gửi vào mỗi worker một **sentinel** (thường là `None`):
+
+```python
+def worker():
+    while True:
+        item = q.get()
+        if item is None:
+            break
+        results.put(process(item))
+```
+
+Đây là mô hình thu nhỏ của Celery, RQ hay Kafka consumer group.
+
+## Xử lý lỗi trong worker
+
+Exception xảy ra trong thread **không tự lan ra thread chính**. Phải bắt lỗi rồi ghi lại (hoặc đưa vào queue kết quả), nếu không lỗi sẽ biến mất mà không ai biết.
+%%% quiz
+? GIL có làm `x += 1` trên biến dùng chung trở nên an toàn không?
+- Có
+* Không, vẫn cần Lock
+? Tác vụ chủ yếu là gọi HTTP thì chọn gì?
+* ThreadPoolExecutor (hoặc asyncio)
+- ProcessPoolExecutor
+- Chạy tuần tự
+%%% hints
+- BankAccount: tạo `self._lock = threading.Lock()`, bọc mọi thao tác đọc/ghi `balance` trong `with self._lock`.
+- parallel_map: `with ThreadPoolExecutor(workers) as pool: return list(pool.map(fn, items))`.
+- run_pipeline: tạo `Queue`, khởi động `workers` thread; put mọi item, sau đó put thêm `workers` cái `None`; `join` các thread. Trong worker, bọc `fn(item)` bằng try/except để ghi lỗi vào `errors`.
+%%% starter
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+
+
+class BankAccount:
+    def __init__(self, balance: int = 0):
+        self.balance = balance  # TODO: không thread-safe
+        self.history = []
+
+    def deposit(self, amount: int) -> None:
+        current = self.balance
+        self.history.append(("deposit", amount))  # ghi nhật ký
+        self.balance = current + amount
+
+    def withdraw(self, amount: int) -> bool:
+        """Đủ tiền thì trừ và trả True, không đủ trả False (atomic)."""
+        if self.balance >= amount:
+            self.history.append(("withdraw", amount))
+            self.balance -= amount
+            return True
+        return False
+
+
+def parallel_map(fn, items: list, workers: int = 8) -> list:
+    """Như map nhưng chạy song song trên thread pool, giữ thứ tự."""
+    return [fn(x) for x in items]  # TODO
+
+
+def run_pipeline(items: list, fn, workers: int = 4) -> tuple[list, list]:
+    """Producer–consumer: `workers` thread lấy item từ Queue, gọi fn(item).
+    Trả (kết quả đã sort, danh sách lỗi dạng str). Mọi thread phải kết thúc trước khi return."""
+    return [], []  # TODO
+%%% tests
+import threading
+import time
+
+from checker import test, eq, ok
+from solution import *
+
+
+def hammer(n_threads, body):
+    barrier = threading.Barrier(n_threads)
+
+    def run():
+        barrier.wait()
+        body()
+
+    threads = [threading.Thread(target=run) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+@test("deposit song song không mất tiền")
+def _():
+    acc = BankAccount()
+    old = sys_switch(1e-6)
+    try:
+        hammer(8, lambda: [acc.deposit(1) for _ in range(5000)])
+    finally:
+        sys_switch(old)
+    eq(40000, acc.balance)
+
+
+@test("withdraw song song không bao giờ âm")
+def _():
+    acc = BankAccount(1000)
+    ok_count = []
+    old = sys_switch(1e-6)
+    try:
+        hammer(8, lambda: ok_count.extend(1 for _ in range(500) if acc.withdraw(1)))
+    finally:
+        sys_switch(old)
+    eq(0, acc.balance)
+    eq(1000, len(ok_count))
+
+
+@test("parallel_map giữ thứ tự và chạy song song")
+def _():
+    def slow_double(x):
+        time.sleep(0.1)
+        return x * 2
+
+    start = time.perf_counter()
+    eq([0, 2, 4, 6, 8, 10, 12, 14], parallel_map(slow_double, list(range(8)), workers=8))
+    ok(time.perf_counter() - start < 0.5, "8 việc x 0.1s phải xong trong khoảng 0.1s")
+
+
+@test("run_pipeline xử lý hết, gom lỗi, dọn thread")
+def _():
+    before = threading.active_count()
+
+    def work(x):
+        if x == 3:
+            raise ValueError("item 3 hỏng")
+        time.sleep(0.01)
+        return x * x
+
+    results, errors = run_pipeline(list(range(6)), work, workers=3)
+    eq([0, 1, 4, 16, 25], results)
+    eq(1, len(errors))
+    ok("item 3 hỏng" in errors[0], f"errors = {errors}")
+    eq(before, threading.active_count(), "còn thread chưa kết thúc")
+
+
+@test("run_pipeline song song")
+def _():
+    start = time.perf_counter()
+    run_pipeline(list(range(8)), lambda x: time.sleep(0.1) or x, workers=4)
+    ok(time.perf_counter() - start < 0.5, "4 worker x 8 việc x 0.1s phải xong trong khoảng 0.2s")
+
+
+def sys_switch(value):
+    import sys
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(value)  # đổi thread thường xuyên hơn để lộ race condition
+    return old
+%%% solution
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+
+
+class BankAccount:
+    def __init__(self, balance: int = 0):
+        self.balance = balance
+        self.history = []
+        self._lock = threading.Lock()
+
+    def deposit(self, amount: int) -> None:
+        with self._lock:
+            current = self.balance
+            self.history.append(("deposit", amount))
+            self.balance = current + amount
+
+    def withdraw(self, amount: int) -> bool:
+        with self._lock:
+            if self.balance >= amount:
+                self.history.append(("withdraw", amount))
+                self.balance -= amount
+                return True
+            return False
+
+
+def parallel_map(fn, items: list, workers: int = 8) -> list:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fn, items))
+
+
+def run_pipeline(items: list, fn, workers: int = 4) -> tuple[list, list]:
+    q: Queue = Queue()
+    results, errors = [], []
+    out_lock = threading.Lock()
+
+    def worker():
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            try:
+                r = fn(item)
+                with out_lock:
+                    results.append(r)
+            except Exception as e:  # noqa: BLE001
+                with out_lock:
+                    errors.append(f"{item}: {e}")
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for item in items:
+        q.put(item)
+    for _ in threads:
+        q.put(None)
+    for t in threads:
+        t.join()
+    return sorted(results), errors

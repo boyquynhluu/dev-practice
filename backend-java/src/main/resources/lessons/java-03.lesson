@@ -1,0 +1,213 @@
+%%% meta
+id: java-03
+title: Interface, kế thừa và đa hình
+level: core
+topic: OOP
+order: 3
+%%% theory
+## Interface là "hợp đồng"
+
+Interface mô tả **làm được gì**, không nói **làm thế nào**. Code gọi chỉ phụ thuộc vào interface, nên có thể thay cách cài đặt mà không phải sửa nơi gọi. Đây chính là nguyên lý **Open/Closed**: muốn thêm loại giảm giá mới thì viết thêm class, không sửa `Checkout`.
+
+```java
+interface DiscountRule {
+    long apply(long subtotal);          // abstract
+    default String name() {             // default method (Java 8+)
+        return getClass().getSimpleName();
+    }
+}
+```
+
+## Đa hình (polymorphism)
+
+```java
+List<DiscountRule> rules = List.of(new PercentOff(10), new FixedOff(30_000));
+for (DiscountRule r : rules) r.apply(200_000); // JVM gọi đúng method của từng class
+```
+
+## Kế thừa class: dùng tiết kiệm
+
+- `extends` buộc chặt class con vào class cha. Class cha đổi một chút là class con có thể hỏng (*fragile base class*).
+- **Ưu tiên composition hơn inheritance**: class giữ một object khác và uỷ quyền cho nó, thay vì kế thừa.
+- `abstract class` hợp khi các class con dùng chung **trạng thái hoặc code**. Nếu chỉ dùng chung "hợp đồng" thì dùng interface.
+
+## Tiền tính bằng `long`
+
+Nhiều hệ thống lưu tiền bằng `long` theo đơn vị nhỏ nhất (đồng, cent) để không dính lỗi số thực. Phép chia phần trăm thì làm tròn xuống: `subtotal * (100 - p) / 100`.
+%%% quiz
+? Khi nào nên chọn `abstract class` thay vì `interface`?
+- Khi muốn đa kế thừa
+* Khi các class con dùng chung trạng thái (field) hoặc code
+- Không bao giờ
+> Một class implement được nhiều interface nhưng chỉ extends được một class.
+? Thêm loại giảm giá mới mà không sửa `Checkout` là nguyên lý nào?
+- Single Responsibility
+* Open/Closed
+- Liskov Substitution
+%%% hints
+- `PercentOff`: kiểm tra 0..100 trong constructor; `apply` trả `subtotal * (100 - percent) / 100`.
+- `FixedOff`: `Math.max(0, subtotal - amount)`.
+- `MinSpendOff`: nếu `subtotal >= minSpend` thì giảm, ngược lại trả nguyên `subtotal`.
+- `Checkout.best`: duyệt mọi rule, lấy giá thấp nhất; không có rule nào thì trả `subtotal`.
+%%% starter
+import java.util.List;
+
+interface DiscountRule {
+    long apply(long subtotal);
+
+    default String name() { return getClass().getSimpleName(); }
+}
+
+class PercentOff implements DiscountRule {
+    private final int percent;
+
+    PercentOff(int percent) {
+        // TODO validate 0..100
+        this.percent = percent;
+    }
+
+    public long apply(long subtotal) {
+        return subtotal; // TODO
+    }
+}
+
+class FixedOff implements DiscountRule {
+    private final long amount;
+
+    FixedOff(long amount) { this.amount = amount; }
+
+    public long apply(long subtotal) {
+        return subtotal; // TODO: không được âm
+    }
+}
+
+/** Giảm `amount` khi đơn từ `minSpend` trở lên. */
+class MinSpendOff implements DiscountRule {
+    private final long minSpend;
+    private final long amount;
+
+    MinSpendOff(long minSpend, long amount) {
+        this.minSpend = minSpend;
+        this.amount = amount;
+    }
+
+    public long apply(long subtotal) {
+        return subtotal; // TODO
+    }
+}
+
+class Checkout {
+    /** Giá thấp nhất sau khi áp MỘT rule tốt nhất. */
+    static long best(long subtotal, List<DiscountRule> rules) {
+        return subtotal; // TODO
+    }
+
+    /** Tên rule cho giá thấp nhất, hoặc "none" nếu không có rule nào giảm được. */
+    static String bestRuleName(long subtotal, List<DiscountRule> rules) {
+        return "none"; // TODO
+    }
+}
+%%% tests
+import java.util.List;
+
+class Tests {
+    static void run(T t) {
+        t.test("PercentOff 10% của 200.000", () -> T.eq(180_000L, new PercentOff(10).apply(200_000)));
+        t.test("PercentOff làm tròn xuống", () -> T.eq(66L, new PercentOff(33).apply(99)));
+        t.test("PercentOff ngoài 0..100 -> IllegalArgumentException", () -> {
+            T.throwsEx(IllegalArgumentException.class, () -> new PercentOff(101));
+            T.throwsEx(IllegalArgumentException.class, () -> new PercentOff(-1));
+        });
+        t.test("FixedOff không làm giá âm", () -> {
+            T.eq(170_000L, new FixedOff(30_000).apply(200_000));
+            T.eq(0L, new FixedOff(30_000).apply(20_000));
+        });
+        t.test("MinSpendOff chỉ áp khi đủ điều kiện", () -> {
+            DiscountRule r = new MinSpendOff(500_000, 50_000);
+            T.eq(450_000L, r.apply(500_000));
+            T.eq(499_999L, r.apply(499_999));
+        });
+        t.test("Checkout.best chọn rule rẻ nhất (đa hình)", () -> {
+            List<DiscountRule> rules = List.of(new PercentOff(10), new FixedOff(30_000), new MinSpendOff(1_000_000, 200_000));
+            T.eq(170_000L, Checkout.best(200_000, rules));
+            T.eq(800_000L, Checkout.best(1_000_000, rules));
+        });
+        t.test("Checkout.best không có rule", () -> T.eq(99L, Checkout.best(99, List.of())));
+        t.test("bestRuleName", () -> {
+            List<DiscountRule> rules = List.of(new PercentOff(10), new FixedOff(30_000));
+            T.eq("FixedOff", Checkout.bestRuleName(200_000, rules));
+            T.eq("PercentOff", Checkout.bestRuleName(1_000_000, rules));
+            T.eq("none", Checkout.bestRuleName(100, List.of(new MinSpendOff(500, 10))));
+        });
+        t.test("Rule mới viết bằng lambda vẫn dùng được (Open/Closed)", () -> {
+            DiscountRule half = s -> s / 2;
+            T.eq(50L, Checkout.best(100, List.of(new PercentOff(10), half)));
+        });
+    }
+}
+%%% solution
+import java.util.List;
+
+interface DiscountRule {
+    long apply(long subtotal);
+
+    default String name() { return getClass().getSimpleName(); }
+}
+
+class PercentOff implements DiscountRule {
+    private final int percent;
+
+    PercentOff(int percent) {
+        if (percent < 0 || percent > 100) throw new IllegalArgumentException("percent phải trong 0..100");
+        this.percent = percent;
+    }
+
+    public long apply(long subtotal) {
+        return subtotal * (100 - percent) / 100;
+    }
+}
+
+class FixedOff implements DiscountRule {
+    private final long amount;
+
+    FixedOff(long amount) { this.amount = amount; }
+
+    public long apply(long subtotal) {
+        return Math.max(0, subtotal - amount);
+    }
+}
+
+class MinSpendOff implements DiscountRule {
+    private final long minSpend;
+    private final long amount;
+
+    MinSpendOff(long minSpend, long amount) {
+        this.minSpend = minSpend;
+        this.amount = amount;
+    }
+
+    public long apply(long subtotal) {
+        return subtotal >= minSpend ? Math.max(0, subtotal - amount) : subtotal;
+    }
+}
+
+class Checkout {
+    static long best(long subtotal, List<DiscountRule> rules) {
+        long best = subtotal;
+        for (DiscountRule r : rules) best = Math.min(best, r.apply(subtotal));
+        return best;
+    }
+
+    static String bestRuleName(long subtotal, List<DiscountRule> rules) {
+        long best = subtotal;
+        String name = "none";
+        for (DiscountRule r : rules) {
+            long p = r.apply(subtotal);
+            if (p < best) {
+                best = p;
+                name = r.name();
+            }
+        }
+        return name;
+    }
+}

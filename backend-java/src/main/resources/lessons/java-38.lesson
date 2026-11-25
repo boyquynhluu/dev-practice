@@ -1,0 +1,101 @@
+%%% meta
+id: java-38
+title: Performance — JMH, connection pool và tìm nút thắt cổ chai
+level: advanced
+topic: Performance
+order: 38
+%%% theory
+## Quy trình: đo trước, tối ưu sau
+
+1. Đặt mục tiêu cụ thể, ví dụ p99 dưới 300 ms ở 500 RPS.
+2. **Tái hiện** được tải (k6, Gatling, JMeter) với dữ liệu giống thật.
+3. **Đo và khoanh vùng** nút thắt: CPU, RAM hay GC, DB, khoá, hay mạng.
+4. Sửa **một** thứ, đo lại, so sánh. Không cải thiện thì bỏ thay đổi đó.
+
+> Tối ưu sớm khi chưa đo là nguồn gốc của nhiều sai lầm. Phần lớn thời gian thường nằm ở I/O (DB, mạng), không nằm ở vòng lặp Java.
+
+## Công cụ khoanh vùng
+
+| Triệu chứng | Công cụ |
+|---|---|
+| Chậm ở endpoint nào, chặng nào | Tracing (OpenTelemetry), metric p99 theo endpoint |
+| CPU cao, hàm nào nóng | **async-profiler** (flame graph), **JFR** (`jcmd <pid> JFR.start duration=60s filename=rec.jfr`) cùng JDK Mission Control |
+| Treo, nghẽn | Thread dump (`jcmd <pid> Thread.print`) chụp 3 lần cách nhau vài giây: nhiều thread `BLOCKED` hoặc `WAITING` ở cùng một chỗ |
+| RAM và GC | GC log (`-Xlog:gc*`), heap dump kết hợp Eclipse MAT, metric `jvm_gc_pause` |
+| DB | Slow query log, `EXPLAIN ANALYZE`, đếm số query mỗi request (N+1) |
+
+## N+1 query
+
+```java
+List<Order> orders = orderRepo.findAll();                // 1 query
+orders.forEach(o -> o.getItems().size());                // +N query (lazy load)
+```
+
+Cách sửa: `JOIN FETCH` hoặc `@EntityGraph`, `@BatchSize` hoặc `hibernate.default_batch_fetch_size`, hoặc dùng DTO projection. Phát hiện bằng log SQL kết hợp đếm query (datasource-proxy, Hibernate statistics).
+
+## Connection pool (HikariCP)
+
+- Pool **càng to càng chậm**: DB chỉ xử lý song song được khoảng số nhân CPU cộng số đĩa. Thêm connection chỉ làm tăng tranh chấp khoá và context switch. Công thức khởi đầu: `pool = (số core của DB × 2) + số đĩa`, thường chỉ **10–20**.
+- **Tổng** số connection = pool size × số instance. Con số này phải nhỏ hơn `max_connections` của DB.
+- Các chỉ số Hikari cần theo dõi: `hikaricp_connections_pending` (có request đang chờ connection) và `connections_acquire` (thời gian chờ lấy connection).
+- Đặt `connectionTimeout` (khoảng 2–5 giây) để fail nhanh thay vì treo. Đặt `maxLifetime` nhỏ hơn `wait_timeout` của MySQL.
+- **Không giữ connection trong lúc gọi HTTP ra ngoài**. Một method `@Transactional` gọi API đối tác mất 3 giây là chiếm connection suốt 3 giây đó.
+
+## JMH: micro-benchmark đúng cách
+
+Đo kiểu `System.nanoTime()` quanh một vòng lặp gần như luôn sai:
+- JIT chưa **warm-up**: vài nghìn lần chạy đầu chạy ở chế độ interpreter.
+- **Dead code elimination**: kết quả không được dùng thì JIT xoá luôn đoạn code đó, và ta đo ra 0 ns.
+- Constant folding, ảnh hưởng của GC, và chạy chỉ một fork.
+
+```java
+@BenchmarkMode(Mode.AverageTime) @OutputTimeUnit(TimeUnit.NANOSECONDS)
+@Warmup(iterations = 5) @Measurement(iterations = 5) @Fork(2) @State(Scope.Thread)
+public class JoinBench {
+    List<String> parts = List.of("a", "b", "c", "d");
+    @Benchmark public String plus()   { String s = ""; for (String p : parts) s += p; return s; }
+    @Benchmark public void builder(Blackhole bh) { bh.consume(String.join("", parts)); }
+}
+```
+
+Trả kết quả ra (`return`) hoặc đưa vào `Blackhole` để JIT không xoá code. Luôn đọc thêm **độ lệch (±error)** của kết quả.
+
+## Các nút thắt hay gặp trong backend Java
+
+- Thiếu index, N+1 query, `SELECT *` kéo về cột lớn, phân trang OFFSET ở trang sâu.
+- Pool (DB, HTTP client) quá nhỏ hoặc quá to, gọi ra ngoài mà **không có timeout**.
+- Khoá `synchronized` dùng chung cho mọi request, log quá nhiều ở mức DEBUG, serialize JSON object rất lớn.
+- Cache không có TTL hoặc không giới hạn kích thước, dẫn tới GC liên tục hoặc hết RAM.
+%%% quiz
+? Benchmark bằng `nanoTime()` quanh vòng lặp mà không dùng kết quả. Vì sao số đo có thể gần 0?
+* JIT loại bỏ đoạn code không có tác dụng (dead code elimination)
+- Vì CPU quá nhanh
+- Vì nanoTime không chính xác
+? 4 instance, mỗi instance pool 50 connection, MySQL có `max_connections = 150`. Vấn đề là gì?
+- Không có vấn đề gì
+* Tổng 200 connection vượt giới hạn 150, một số instance sẽ không kết nối được. Pool cũng đang quá to
+- Pool quá nhỏ
+? Thread dump cho thấy 180 thread `BLOCKED` chờ cùng một monitor. Hướng điều tra là gì?
+* Có một khoá dùng chung (synchronized) bị tranh chấp. Cần tìm thread đang giữ khoá và thu hẹp phạm vi khoá
+- Tăng số thread
+- Tăng heap
+? Vì sao không nên gọi HTTP ra ngoài bên trong một method `@Transactional`?
+* Vì connection DB bị giữ suốt thời gian chờ HTTP, khiến pool cạn nhanh
+- Vì Spring cấm
+- Vì HTTP không có transaction
+? `hikaricp_connections_pending` liên tục lớn hơn 0 nghĩa là gì?
+- Pool đang nhàn rỗi
+* Có request phải xếp hàng chờ connection. Cần xem query chậm, connection bị giữ lâu, hoặc kích thước pool
+- DB đã chết
+? Cách nào KHÔNG giúp sửa N+1 trong JPA?
+- `JOIN FETCH` hoặc `@EntityGraph`
+- `default_batch_fetch_size`
+* Tăng kích thước connection pool
+%%% hints
+- Tạo project JMH (`mvn archetype:generate -DarchetypeGroupId=org.openjdk.jmh -DarchetypeArtifactId=jmh-java-benchmark-archetype`). So sánh `String +=`, `StringBuilder` và `String.join`, rồi thử bỏ `Blackhole` để thấy kết quả sai.
+- Bật `spring.jpa.properties.hibernate.generate_statistics=true`, viết một endpoint có N+1 rồi đếm số query. Sửa bằng `@EntityGraph` và so sánh.
+- Chạy `k6` với 50 VU vào một endpoint có `Thread.sleep(200)` trong `@Transactional`. Lần lượt đặt `maximumPoolSize` = 5, 10, 50 và xem `connections_pending`.
+- Ghi JFR 60 giây khi đang có tải, mở bằng JDK Mission Control và tìm hot method.
+%%% starter
+%%% tests
+%%% solution

@@ -1,0 +1,155 @@
+%%% meta
+id: py-01
+title: Kiểu dữ liệu, string và slicing
+level: core
+topic: Cú pháp cơ bản
+order: 1
+%%% theory
+## Kiểu cơ bản
+
+| Kiểu | Ví dụ | Ghi chú |
+|---|---|---|
+| `int` | `10**30` | **không tràn số**, độ dài tuỳ ý |
+| `float` | `0.1 + 0.2` | ra `0.30000000000000004`; tính tiền dùng `decimal.Decimal` |
+| `str` | `"xin chào"` | Unicode, **bất biến** |
+| `bool` | `True` | là lớp con của int: `True + True == 2` |
+| `None` | | so sánh bằng `is None`, không dùng `== None` |
+
+Python có **kiểu động nhưng mạnh**: viết `"1" + 1` sẽ ném `TypeError`, chứ không tự chuyển kiểu như JavaScript.
+
+## Slicing `s[start:stop:step]`
+
+```python
+s = "backend"
+s[0]      # 'b'
+s[-1]     # 'd'
+s[1:4]    # 'ack' (không lấy stop)
+s[::-1]   # 'dnekcab' (đảo ngược)
+```
+
+## Các method của str
+
+`strip()`, `lower()`, `title()`, `split()` (không truyền tham số thì tách theo mọi khoảng trắng và bỏ phần rỗng), `" ".join(list)`, `replace`, `startswith`, `isalnum()`, `count`, `find`.
+
+## f-string
+
+```python
+name, score = "An", 9.456
+f"{name} đạt {score:.1f} điểm"   # 'An đạt 9.5 điểm'
+f"{1234567:,}"                   # '1,234,567'
+```
+
+## Bỏ dấu tiếng Việt
+
+```python
+import unicodedata
+s = unicodedata.normalize("NFD", "Học")          # tách chữ và dấu
+"".join(c for c in s if unicodedata.category(c) != "Mn")  # 'Hoc'
+```
+
+Riêng chữ `đ`/`Đ` không tách được thành chữ và dấu, nên phải `replace` thủ công.
+%%% quiz
+? `"abc"[::-1]` cho kết quả gì?
+- 'abc'
+* 'cba'
+- Lỗi
+? Kiểm tra biến `x` là None thế nào cho đúng?
+- x == None
+* x is None
+- x === None
+%%% hints
+- normalize_name: `" ".join(s.split())` gom khoảng trắng, sau đó viết hoa chữ đầu mỗi từ bằng `w[:1].upper() + w[1:].lower()`.
+- mask_email: tách bằng `rpartition("@")`; nếu phần local dài từ 2 ký tự trở xuống thì chỉ giữ ký tự đầu.
+- slugify: bỏ dấu, thay `đ`, `lower()`, các cụm ký tự không phải chữ/số đổi thành `-`, rồi `strip("-")`. Có thể dùng `re.sub(r"[^a-z0-9]+", "-", s)`.
+%%% starter
+import re
+import unicodedata
+
+
+def normalize_name(s: str) -> str:
+    """'  nguyễn   văn AN ' -> 'Nguyễn Văn An'"""
+    return s  # TODO
+
+
+def is_palindrome(s: str) -> bool:
+    """Chỉ xét chữ/số, không phân biệt hoa thường."""
+    return False  # TODO
+
+
+def mask_email(email: str) -> str:
+    """'abcdef@gmail.com' -> 'a****f@gmail.com'; local <= 2 ký tự: 'ab@x.vn' -> 'a*@x.vn'"""
+    return email  # TODO
+
+
+def slugify(title: str) -> str:
+    """'Học Python cơ bản — Đường đi!' -> 'hoc-python-co-ban-duong-di'"""
+    return title  # TODO
+
+
+if __name__ == "__main__":
+    print(normalize_name("  nguyễn   văn AN "))
+    print(slugify("Học Python cơ bản — Đường đi!"))
+%%% tests
+from checker import test, eq, ok
+from solution import *
+
+
+@test("normalize_name gom khoảng trắng + viết hoa")
+def _():
+    eq("Nguyễn Văn An", normalize_name("  nguyễn   văn AN "))
+    eq("", normalize_name("   "))
+
+
+@test("is_palindrome")
+def _():
+    eq(True, is_palindrome("A man, a plan, a canal: Panama"))
+    eq(False, is_palindrome("race a car"))
+    eq(True, is_palindrome(""))
+
+
+@test("mask_email")
+def _():
+    eq("a****f@gmail.com", mask_email("abcdef@gmail.com"))
+    eq("a*@x.vn", mask_email("ab@x.vn"))
+    eq("a*@x.vn", mask_email("a@x.vn"))
+
+
+@test("slugify bỏ dấu tiếng Việt")
+def _():
+    eq("hoc-python-co-ban-duong-di", slugify("Học Python cơ bản — Đường đi!"))
+
+
+@test("slugify ký tự đặc biệt ở hai đầu")
+def _():
+    eq("api-v2", slugify("  --API v2!!  "))
+%%% solution
+import re
+import unicodedata
+
+
+def normalize_name(s: str) -> str:
+    return " ".join(w[:1].upper() + w[1:].lower() for w in s.split())
+
+
+def is_palindrome(s: str) -> bool:
+    chars = [c.lower() for c in s if c.isalnum()]
+    return chars == chars[::-1]
+
+
+def mask_email(email: str) -> str:
+    local, _, domain = email.rpartition("@")
+    if len(local) <= 2:
+        return local[:1] + "*" + "@" + domain
+    return local[0] + "*" * (len(local) - 2) + local[-1] + "@" + domain
+
+
+def slugify(title: str) -> str:
+    s = title.replace("đ", "d").replace("Đ", "D")
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn").lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+
+
+if __name__ == "__main__":
+    print(normalize_name("  nguyễn   văn AN "))
+    print(slugify("Học Python cơ bản — Đường đi!"))

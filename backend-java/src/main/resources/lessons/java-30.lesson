@@ -1,0 +1,88 @@
+%%% meta
+id: java-30
+title: Kafka — Partition, consumer group, rebalancing và delivery semantics
+level: advanced
+topic: Kafka
+order: 30
+%%% theory
+## Mô hình
+
+- **Topic** được chia thành các **partition**. Mỗi partition là một **log chỉ ghi nối** (append-only), có thứ tự, và mỗi message có một **offset** tăng dần.
+- Message được **giữ lại theo thời gian hoặc dung lượng** (retention), không bị xoá khi đã đọc. Nhiều nhóm có thể đọc độc lập, và có thể đọc lại từ đầu (replay).
+- **Key** quyết định partition: `hash(key) % số partition`. **Thứ tự chỉ được đảm bảo trong một partition.** Vì vậy cùng một `orderId` phải dùng cùng một key, khi đó các event của một đơn sẽ đến đúng thứ tự.
+- Mỗi partition có **replication factor** (thường là 3). Một broker làm leader, các broker khác là follower. ISR là tập replica đang theo kịp leader.
+
+## Consumer group
+
+```
+topic orders: P0 P1 P2 P3 P4 P5
+group "billing":  C1 ← P0,P1   C2 ← P2,P3   C3 ← P4,P5
+group "email":    C1 ← P0..P5          (group khác đọc độc lập toàn bộ)
+```
+
+- **Trong một group, mỗi partition chỉ giao cho đúng một consumer.** Muốn xử lý song song nhiều hơn thì tăng số partition. Số consumer **lớn hơn** số partition thì consumer thừa sẽ ngồi không.
+- Group lưu **offset đã commit** cho từng partition (trong topic `__consumer_offsets`). Khi khởi động lại, consumer đọc tiếp từ offset đó.
+
+## Rebalancing
+
+Group chia lại partition khi có consumer vào hoặc rời group, khi consumer bị coi là đã chết (không gửi heartbeat trong `session.timeout.ms`), hoặc khi **xử lý quá lâu, vượt `max.poll.interval.ms`** giữa hai lần `poll()`.
+
+- Kiểu eager cũ: **mọi consumer dừng** cho tới khi chia xong. Kiểu **cooperative-sticky** chỉ chuyển những partition cần chuyển.
+- Batch xử lý chậm làm vượt `max.poll.interval.ms`, dẫn tới rebalance, các message bị giao lại, rồi lại chậm, rồi lại rebalance. Cách chữa: giảm `max.poll.records`, xử lý nhanh hơn, hoặc tăng timeout.
+
+## Delivery semantics
+
+| | Khi nào commit offset | Rủi ro |
+|---|---|---|
+| At-most-once | **Trước** khi xử lý | Xử lý lỗi thì **mất** message |
+| **At-least-once** (phổ biến) | **Sau** khi xử lý xong | Chết sau khi xử lý mà chưa kịp commit thì **nhận trùng** |
+| Exactly-once | Transaction của Kafka (read-process-write trong Kafka) | Chỉ đúng khi cả đầu vào lẫn đầu ra đều là Kafka |
+
+Trong thực tế: at-least-once kết hợp **consumer idempotent** (lưu message id đã xử lý, hoặc thao tác upsert).
+
+## Producer an toàn
+
+- `acks=all`: chờ mọi replica trong ISR xác nhận. Đi cùng `min.insync.replicas=2` trên topic.
+- `enable.idempotence=true` (mặc định từ Kafka 3.0): broker loại bỏ bản trùng khi producer retry, nhờ producer id và sequence number. Thứ tự vẫn được giữ trong một partition.
+- Muốn ghi DB và gửi event cùng nhau một cách tin cậy: dùng **Outbox pattern**, kết hợp Debezium hoặc một poller.
+
+## Lỗi khi xử lý message
+
+Retry có giới hạn số lần. Hết lần retry thì đẩy sang **Dead Letter Topic** (DLT) để xem xét sau, đừng chặn cả partition vì một message độc (poison message). Spring Kafka có sẵn `DefaultErrorHandler` và `DeadLetterPublishingRecoverer`.
+
+## Consumer lag
+
+**Lag** là offset mới nhất của partition trừ offset consumer đã commit. Lag tăng đều nghĩa là consumer không theo kịp tốc độ ghi. Hãy cảnh báo khi lag tăng, hoặc theo thời gian trễ của message. Không nên chỉ đặt ngưỡng cố định.
+%%% quiz
+? Topic có 4 partition, group có 6 consumer. Chuyện gì xảy ra?
+- Mỗi consumer nhận khoảng 2/3 partition
+* 4 consumer mỗi cái nhận 1 partition, 2 consumer ngồi không
+- Kafka báo lỗi
+? Muốn mọi event của cùng một đơn hàng được xử lý đúng thứ tự thì làm gì?
+* Gửi message với key = orderId, để mọi event của đơn vào cùng một partition
+- Tăng số partition
+- Đặt `acks=0`
+? Với at-least-once (commit sau khi xử lý), rủi ro chính là gì?
+- Mất message
+* Nhận trùng message, nên consumer phải idempotent
+- Không có rủi ro gì
+? Consumer xử lý mỗi batch mất 10 phút, trong khi `max.poll.interval.ms` = 5 phút. Hậu quả là gì?
+* Consumer bị coi là chết, group rebalance, message bị giao lại và có thể lặp mãi
+- Kafka tự tăng timeout
+- Message bị xoá
+? Message lỗi định dạng làm consumer ném exception mãi. Nên làm gì?
+- Retry vô hạn
+* Retry có giới hạn, sau đó đẩy sang Dead Letter Topic để partition tiếp tục chạy
+- Xoá topic
+? `enable.idempotence=true` ở producer giúp gì?
+- Consumer không nhận trùng nữa
+* Broker loại bỏ bản ghi trùng khi producer retry, giữ thứ tự trong partition
+- Mã hoá message
+%%% hints
+- Chạy Kafka một node bằng Docker (`apache/kafka:3.8.0`, chế độ KRaft). Tạo topic 3 partition: `kafka-topics.sh --create --topic orders --partitions 3`.
+- Mở 2 rồi 3 rồi 4 consumer cùng `group.id`, rồi xem phân chia partition bằng `kafka-consumer-groups.sh --describe --group billing`. Theo dõi rebalance khi tắt một consumer.
+- Viết consumer Spring Kafka có `DefaultErrorHandler` (3 lần retry) và `DeadLetterPublishingRecoverer`. Gửi một message JSON hỏng rồi xem nó rơi vào `orders.DLT`.
+- Xem cột `LAG` trong lệnh describe khi tạm dừng consumer và producer vẫn gửi.
+%%% starter
+%%% tests
+%%% solution

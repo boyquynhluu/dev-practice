@@ -1,0 +1,91 @@
+%%% meta
+id: java-31
+title: Event-driven Architecture — Schema evolution, outbox và eventual consistency
+level: advanced
+topic: Event-driven Architecture
+order: 31
+%%% theory
+## Event là gì
+
+Event là **một sự thật đã xảy ra**, đặt tên ở thì quá khứ (`OrderPlaced`, `PaymentFailed`), và **bất biến**. Nơi phát event không biết và không quan tâm ai sẽ nghe.
+
+| Kiểu | Payload | Ưu và nhược |
+|---|---|---|
+| **Event notification** | Chỉ có id: `{orderId}` | Nhỏ gọn. Bên nghe phải gọi lại để lấy chi tiết, nên coupling tăng |
+| **Event-carried state transfer** | Đủ dữ liệu cần thiết | Bên nghe tự xử lý được. Payload lớn, cần quản lý schema |
+
+## Schema evolution: thay đổi event mà không làm vỡ ai
+
+Producer và consumer **deploy ở những thời điểm khác nhau**. Event cũ vẫn nằm trong topic (do retention, hoặc khi replay). Vì vậy mọi thay đổi schema phải **tương thích**:
+
+| Kiểu tương thích | Nghĩa là | Cho phép |
+|---|---|---|
+| **Backward** | Consumer **mới** đọc được event **cũ** | Thêm field **có giá trị mặc định**, xoá field |
+| **Forward** | Consumer **cũ** đọc được event **mới** | Thêm field (consumer cũ bỏ qua), xoá field có mặc định |
+| **Full** | Cả hai chiều | Chỉ thêm hoặc xoá field có mặc định |
+
+Những thay đổi **phá vỡ**: đổi tên field, đổi kiểu dữ liệu (`amount: int` sang `string`), đổi ý nghĩa của field (đơn vị đồng sang nghìn đồng), thêm field bắt buộc không có mặc định.
+
+Cách làm:
+- Dùng **Schema Registry** (Avro, Protobuf, JSON Schema) để kiểm tra tương thích ngay khi đăng ký schema mới. Thay đổi không tương thích sẽ bị chặn từ CI.
+- Với JSON: consumer phải **bỏ qua field lạ** (`FAIL_ON_UNKNOWN_PROPERTIES=false`, `@JsonIgnoreProperties(ignoreUnknown = true)`).
+- Thay đổi phá vỡ thật sự thì tạo event hoặc topic **phiên bản mới** (`OrderPlacedV2`, `orders.v2`). Phát song song cả hai trong thời gian chuyển đổi, hoặc dùng **upcaster** chuyển event cũ sang dạng mới khi đọc.
+- Đặt `eventId`, `eventType`, `version` và `occurredAt` trong phần envelope của event.
+
+## Outbox pattern
+
+Vấn đề *dual write*: `orderRepo.save(order)` rồi `kafka.send(event)`. Nếu DB commit xong mà gửi Kafka lỗi thì event bị mất. Nếu gửi Kafka trước mà DB rollback thì có một event "ma".
+
+```
+BEGIN;
+  INSERT INTO orders ...;
+  INSERT INTO outbox(id, aggregate_id, type, payload) ...;   -- cùng transaction
+COMMIT;
+-- relay: Debezium (CDC) hoặc poller đọc bảng outbox → publish → đánh dấu đã gửi
+```
+
+Relay có thể gửi trùng, vì vậy **consumer phải idempotent**.
+
+## Eventual consistency
+
+Sau khi đặt hàng, màn hình "điểm thưởng" có thể **chưa cập nhật** trong vài trăm mili giây. Cách thiết kế cho ổn:
+- Giao diện hiển thị trạng thái trung gian ("Đang xử lý…"), hoặc dùng optimistic UI.
+- Consumer xử lý **không theo thứ tự**: dùng version hoặc timestamp, và bỏ qua event cũ hơn trạng thái hiện tại.
+- Có cơ chế **đối soát** (reconciliation) định kỳ để phát hiện chỗ bị lệch.
+
+## Choreography và orchestration
+
+- **Choreography**: các service phản ứng với event của nhau. Coupling lỏng, nhưng luồng nghiệp vụ nằm rải rác và khó theo dõi.
+- **Orchestration**: một bộ điều phối ra lệnh cho từng bước. Luồng rõ ràng, dễ xử lý lỗi và hành động bù.
+
+## Test tích hợp event-driven
+
+Dùng Testcontainers (Kafka thật) và Awaitility để chờ kết quả bất đồng bộ (`await().atMost(5, SECONDS).until(...)`). Thêm **contract test** cho schema event giữa producer và consumer.
+%%% quiz
+? Thay đổi nào trên event JSON là AN TOÀN theo kiểu backward?
+* Thêm field mới có giá trị mặc định
+- Đổi tên field `amount` thành `totalAmount`
+- Đổi kiểu `amount` từ số sang chuỗi
+? "Backward compatible" nghĩa là gì?
+- Consumer cũ đọc được event mới
+* Consumer mới đọc được event cũ
+- Producer cũ gửi được tới broker mới
+? Code `save(order)` rồi `kafka.send(event)` có lỗi gì?
+* Dual write: một trong hai có thể thất bại, nên DB và event bị lệch nhau
+- Chạy quá chậm
+- Không có lỗi gì
+? Outbox pattern đảm bảo điều gì?
+- Mỗi event được giao đúng một lần
+* Event được ghi trong cùng transaction với thay đổi nghiệp vụ, nên không bị mất và không có event "ma"
+- Thứ tự toàn cục của mọi event
+? Cần đổi ý nghĩa của field `price` từ "đồng" sang "nghìn đồng". Cách an toàn là gì?
+- Đổi luôn rồi báo các team
+* Thêm field mới (`priceThousand`) hoặc tạo event phiên bản mới, rồi chuyển dần
+- Không bao giờ được đổi
+%%% hints
+- Viết một consumer JSON với Jackson. Cho producer thêm field mới, rồi kiểm tra consumer cũ có vỡ không khi bật và tắt `FAIL_ON_UNKNOWN_PROPERTIES`.
+- Cài Outbox trong Spring Boot: bảng `outbox`, ghi trong cùng `@Transactional`, một `@Scheduled` poller gửi Kafka rồi đánh dấu `sent_at`. Thử tắt Kafka giữa chừng để xem event có bị mất không.
+- Viết test tích hợp bằng Testcontainers Kafka kết hợp Awaitility để kiểm tra luồng OrderPlaced → cộng điểm thưởng.
+%%% starter
+%%% tests
+%%% solution

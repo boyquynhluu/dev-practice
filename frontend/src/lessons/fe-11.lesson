@@ -1,0 +1,185 @@
+%%% meta
+id: fe-11
+title: useEffect và gọi API — loading, error, race condition
+level: advanced
+topic: React
+order: 11
+%%% theory
+## useEffect là để đồng bộ với "bên ngoài"
+
+```jsx
+useEffect(() => {
+  // chạy SAU khi render, mỗi khi deps thay đổi
+  return () => { /* cleanup: chạy trước lần effect kế tiếp và khi unmount */ };
+}, [deps]);
+```
+
+- Dùng useEffect cho: gọi API, subscribe/unsubscribe, timer, thao tác DOM bên ngoài React.
+- **Không** dùng useEffect cho: tính toán từ props/state (cứ tính thẳng khi render), hay xử lý sự kiện click (viết trong handler).
+- Deps phải khai báo **đủ** mọi giá trị mà effect dùng. Thiếu deps thì effect dùng dữ liệu cũ (stale closure).
+
+## Ba trạng thái của một lần tải dữ liệu
+
+```jsx
+const [state, setState] = useState({ status: 'idle', data: null, error: null });
+// 'loading' -> 'success' | 'error'
+```
+
+UI phải xử lý **cả ba**: đang tải, lỗi (có nút thử lại), có dữ liệu (kể cả trường hợp danh sách rỗng).
+
+## Race condition
+
+Người dùng gõ "an", rồi gõ tiếp "anh". Request "an" chậm nhưng **về sau** request "anh", và ghi đè kết quả đúng. Cách chữa là **huỷ request cũ trong cleanup**:
+
+```jsx
+useEffect(() => {
+  const ctrl = new AbortController();
+  fetch(url, { signal: ctrl.signal })
+    .then(...)
+    .catch((e) => { if (e.name !== 'AbortError') setError(e); });
+  return () => ctrl.abort();
+}, [url]);
+```
+
+Cleanup cũng giúp tránh cảnh báo "update state on unmounted component", và không lãng phí băng thông.
+
+## Thực tế
+
+Trong dự án thật, nên dùng **TanStack Query** hoặc **SWR**. Chúng lo sẵn cache, dedupe, retry và refetch. Nhưng bên dưới, chúng làm đúng những việc bạn sắp tự viết.
+%%% quiz
+? Cleanup của useEffect chạy khi nào?
+* Trước lần chạy effect tiếp theo, và khi unmount
+- Chỉ khi unmount
+- Trước lần render đầu tiên
+? Tính `fullName` từ `first` và `last`, có cần dùng useEffect không?
+- Có
+* Không, cứ tính thẳng khi render
+%%% hints
+- State: `const [state, setState] = useState({ status: 'loading', users: [], error: null })`.
+- Effect phụ thuộc `[query, reloadKey]`; trong effect `setState(s => ({ ...s, status: 'loading' }))`, tạo `AbortController`, gọi `fetch(\`/api/users?q=${encodeURIComponent(query)}\`, { signal })`.
+- `if (!res.ok) throw new Error(\`HTTP ${res.status}\`)`. Trong catch: `if (e.name === 'AbortError') return;`.
+- Nút "Thử lại": `setReloadKey(k => k + 1)`.
+%%% starter
+/**
+ * UserSearch: <input name="q"> ; mỗi khi q đổi -> GET /api/users?q=<q> (encodeURIComponent)
+ *  - đang tải: <p className="loading">Đang tải…</p>
+ *  - lỗi: <p className="error">Lỗi: <message></p> + <button className="retry">Thử lại</button>
+ *  - có dữ liệu: <ul><li>{name}</li>...</ul> ; rỗng: <p className="empty">Không có kết quả</p>
+ *  - huỷ request cũ khi q đổi / unmount (AbortController)
+ */
+function UserSearch() {
+  const [q, setQ] = useState('');
+  const [users, setUsers] = useState([]);
+  useEffect(() => {
+    fetch('/api/users?q=' + q).then((r) => r.json()).then(setUsers); // TODO: thiếu loading/error/abort
+  }, [q]);
+  return (
+    <div>
+      <input name="q" value={q} onChange={(e) => setQ(e.target.value)} />
+      <ul>{users.map((u) => <li key={u.id}>{u.name}</li>)}</ul>
+    </div>
+  );
+}
+
+function App() {
+  return <p>Component này cần API — hãy chạy test để kiểm tra.</p>;
+}
+%%% tests
+const USERS = [{ id: 1, name: 'An' }, { id: 2, name: 'Anh' }, { id: 3, name: 'Bình' }];
+const search = (q) => USERS.filter((u) => u.name.toLowerCase().startsWith(q.toLowerCase()));
+const qOf = (url) => decodeURIComponent(new URL(url, 'http://x').searchParams.get('q') ?? '');
+
+test('loading rồi hiển thị kết quả', async () => {
+  mockFetch((url) => ({ body: search(qOf(url)), delay: 50 }));
+  const { container } = await render(<UserSearch />);
+  expect($('.loading', container)).toBeTruthy();
+  await waitFor(() => expect(all('li', container)).toHaveLength(3));
+  expect($('.loading', container)).toBeNull();
+});
+
+test('gõ từ khoá -> gọi API với q đã encode', async () => {
+  const calls = mockFetch((url) => ({ body: search(qOf(url)) }));
+  const { container } = await render(<UserSearch />);
+  await type($('input[name="q"]', container), 'an & b');
+  await waitFor(() => expect(calls.at(-1).url).toBe('/api/users?q=an%20%26%20b'));
+});
+
+test('kết quả rỗng', async () => {
+  mockFetch(() => ({ body: [] }));
+  const { container } = await render(<UserSearch />);
+  await waitFor(() => expect($('.empty', container).textContent).toBe('Không có kết quả'));
+});
+
+test('lỗi HTTP hiển thị lỗi + Thử lại hoạt động', async () => {
+  let fail = true;
+  mockFetch(() => (fail ? { status: 500, body: { message: 'x' } } : { body: USERS }));
+  const { container } = await render(<UserSearch />);
+  await waitFor(() => expect($('.error', container).textContent).toContain('Lỗi'));
+  fail = false;
+  await click($('.retry', container));
+  await waitFor(() => expect(all('li', container)).toHaveLength(3));
+  expect($('.error', container)).toBeNull();
+});
+
+test('race condition: kết quả cũ về sau không được ghi đè', async () => {
+  mockFetch((url) => {
+    const q = qOf(url);
+    return { body: search(q), delay: q === 'a' ? 200 : 20 };
+  });
+  const { container } = await render(<UserSearch />);
+  await type($('input[name="q"]', container), 'a');
+  await type($('input[name="q"]', container), 'b');
+  await flush(300);
+  expect(all('li', container).map((li) => li.textContent)).toEqual(['Bình']);
+});
+
+test('huỷ request cũ (signal.aborted)', async () => {
+  const calls = mockFetch(() => ({ body: [], delay: 100 }));
+  const { container, unmount } = await render(<UserSearch />);
+  await type($('input[name="q"]', container), 'x');
+  expect(calls[0].opts.signal?.aborted).toBe(true);
+  await unmount();
+  expect(calls.at(-1).opts.signal?.aborted).toBe(true);
+});
+%%% solution
+function UserSearch() {
+  const [q, setQ] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [state, setState] = useState({ status: 'loading', users: [], error: null });
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setState((s) => ({ ...s, status: 'loading', error: null }));
+    fetch(`/api/users?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((users) => setState({ status: 'success', users, error: null }))
+      .catch((e) => {
+        if (e.name === 'AbortError') return;
+        setState({ status: 'error', users: [], error: e.message });
+      });
+    return () => ctrl.abort();
+  }, [q, reloadKey]);
+
+  return (
+    <div>
+      <input name="q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm người dùng…" />
+      {state.status === 'loading' && <p className="loading">Đang tải…</p>}
+      {state.status === 'error' && (
+        <>
+          <p className="error">Lỗi: {state.error}</p>
+          <button type="button" className="retry" onClick={() => setReloadKey((k) => k + 1)}>Thử lại</button>
+        </>
+      )}
+      {state.status === 'success' && (state.users.length === 0
+        ? <p className="empty">Không có kết quả</p>
+        : <ul>{state.users.map((u) => <li key={u.id}>{u.name}</li>)}</ul>)}
+    </div>
+  );
+}
+
+function App() {
+  return <p>Component này cần API — hãy chạy test để kiểm tra.</p>;
+}

@@ -1,0 +1,98 @@
+%%% meta
+id: java-32
+title: Docker — Image, layer, cache, volume và secret
+level: intermediate
+topic: Docker
+order: 32
+%%% theory
+## Image và layer
+
+- **Image** là một chuỗi **layer chỉ đọc**. Mỗi lệnh `RUN`, `COPY` hay `ADD` trong Dockerfile tạo ra một layer mới. **Container** là image cộng thêm một layer ghi được ở trên cùng. Container bị xoá thì layer ghi được này mất theo.
+- Layer **được cache**. Khi build lại, Docker dùng lại cache cho tới **lệnh đầu tiên bị thay đổi**. Từ lệnh đó trở đi, mọi lệnh đều chạy lại.
+
+Vì vậy hãy **xếp những thứ ít thay đổi lên trước**:
+
+```dockerfile
+# ---- build stage ----
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -q dependency:go-offline        # layer dependency: chỉ chạy lại khi pom.xml đổi
+COPY src ./src
+RUN mvn -q package -DskipTests
+
+# ---- runtime stage ----
+FROM eclipse-temurin:21-jre
+RUN useradd -r -u 1001 app
+WORKDIR /app
+COPY --from=build /app/target/app.jar app.jar
+USER app                                # không chạy bằng root
+EXPOSE 8080
+HEALTHCHECK CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+```
+
+- **Multi-stage build**: image cuối chỉ chứa JRE và file jar, không có Maven hay source code. Image nhỏ hơn và ít lỗ hổng hơn.
+- Spring Boot còn có `layertools` hoặc buildpacks để tách dependency, các bản snapshot và code ra **các layer riêng**. Khi đó sửa code chỉ phải đẩy lại layer nhỏ nhất.
+- `.dockerignore` loại bỏ `target/`, `node_modules/`, `.git` và `.env` để build context nhỏ và **không lọt secret** vào image.
+- Ghim phiên bản cụ thể (`eclipse-temurin:21.0.5_11-jre`), không dùng tag `latest`, để build lặp lại được.
+
+## Volume
+
+- **Named volume** (`docker volume create pgdata`): Docker quản lý, dùng cho dữ liệu DB. Volume vẫn còn khi container bị xoá.
+- **Bind mount** (`-v ./config:/app/config`): gắn thư mục của máy host vào. Hợp với lúc phát triển và file cấu hình.
+- **Không** ghi dữ liệu quan trọng vào layer ghi được của container.
+
+## Secret
+
+- **Không** đặt secret trong Dockerfile (`ENV DB_PASSWORD=…`) hay `ARG`. Chúng nằm lại trong lịch sử image, và ai có image đều xem được bằng `docker history`.
+- Lúc build mà cần secret (ví dụ token tải dependency riêng): dùng `RUN --mount=type=secret,id=npmrc …` (BuildKit).
+- Lúc chạy: truyền qua biến môi trường từ hệ thống quản lý secret (Docker/K8s secrets, AWS Secrets Manager, Vault), hoặc mount thành file `/run/secrets/db_password`.
+
+## JVM trong container
+
+Java 10 trở lên tự nhận biết giới hạn của cgroup. Hãy đặt `-XX:MaxRAMPercentage=75` để heap không chiếm hết RAM của container, vì JVM còn cần metaspace, thread stack và direct buffer. Nếu bị OOMKilled (exit code 137) thì trước hết xem lại giới hạn RAM và các cờ này.
+
+## Debug container trên production
+
+| Lệnh | Dùng khi |
+|---|---|
+| `docker logs -f --tail 200 app` | Xem log (ứng dụng nên ghi log ra stdout) |
+| `docker exec -it app sh` | Vào container đang chạy |
+| `docker inspect app` | Xem env, mount, network, exit code, health |
+| `docker stats` | Xem CPU và RAM thực tế |
+| `docker run --rm -it --network container:app nicolaka/netshoot` | Image tối giản không có công cụ: gắn một container debug vào cùng network namespace |
+| `jcmd 1 Thread.print`, `jcmd 1 GC.heap_dump /tmp/h.hprof` | Lấy thread dump hoặc heap dump của JVM bên trong |
+%%% quiz
+? Vì sao nên `COPY pom.xml` và tải dependency TRƯỚC khi `COPY src`?
+* Để layer dependency được cache. Sửa code không làm phải tải lại dependency
+- Vì Maven bắt buộc như vậy
+- Để image nhỏ hơn
+? Lợi ích chính của multi-stage build là gì?
+- Build nhanh hơn gấp đôi
+* Image cuối chỉ chứa thứ cần để chạy (JRE và jar), nhỏ hơn và ít lỗ hổng hơn
+- Chạy được nhiều tiến trình
+? Đặt `ENV DB_PASSWORD=secret` trong Dockerfile thì sao?
+- An toàn, vì ENV được mã hoá
+* Secret nằm lại trong image, ai có image đều đọc được bằng `docker history` hay `inspect`
+- Không chạy được
+? Container Postgres bị xoá rồi tạo lại, dữ liệu mất hết. Nguyên nhân có thể là gì?
+* Dữ liệu ghi vào layer ghi được của container thay vì một named volume
+- Postgres không hỗ trợ Docker
+- Thiếu HEALTHCHECK
+? Container Java thoát với exit code 137. Điều đầu tiên nên kiểm tra là gì?
+- Lỗi cú pháp trong code
+* Bị OOMKilled: kiểm tra giới hạn RAM và `-XX:MaxRAMPercentage`
+- Sai cổng EXPOSE
+? Vì sao nên chạy container bằng user không phải root?
+* Để nếu ứng dụng bị khai thác thì kẻ tấn công cũng có ít quyền hơn
+- Vì root không chạy được Java
+- Để log đẹp hơn
+%%% hints
+- Viết Dockerfile multi-stage cho `backend-java` của project này. So sánh kích thước image (`docker images`) khi dùng base JDK và base JRE.
+- Sửa một dòng code rồi build lại. Xem trong output những bước nào ghi `CACHED`. Sau đó đổi thứ tự các lệnh COPY và so sánh.
+- Chạy `docker history <image>` để xem từng layer. Thử thêm `ENV SECRET=x` rồi xem lại để thấy secret bị lộ.
+- Chạy MySQL với named volume, xoá container, tạo lại container, rồi kiểm tra dữ liệu còn không.
+%%% starter
+%%% tests
+%%% solution

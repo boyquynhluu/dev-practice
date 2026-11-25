@@ -1,0 +1,165 @@
+%%% meta
+id: fe-02
+title: Mảng — map, filter, reduce, sort
+level: core
+topic: JavaScript cơ bản
+order: 2
+%%% theory
+## Ba hàm "xương sống"
+
+```js
+const orders = [{ id: 1, total: 120, status: 'paid' }, { id: 2, total: 80, status: 'cancelled' }];
+
+orders.filter((o) => o.status === 'paid');           // giữ phần tử thoả điều kiện
+orders.map((o) => o.total);                          // biến đổi từng phần tử -> mảng mới cùng độ dài
+orders.reduce((sum, o) => sum + o.total, 0);         // gộp thành 1 giá trị (nhớ giá trị khởi tạo!)
+```
+
+Cả ba đều **không sửa mảng gốc**. Trong React, đây là thứ bắt buộc phải làm: state phải được coi là bất biến.
+
+## Các hàm khác nên thuộc
+
+`find`, `findIndex`, `some`, `every`, `includes`, `flatMap`, `Object.groupBy` (mới), `Array.from({ length: n }, (_, i) => i)`, `at(-1)`.
+
+## `sort` sửa mảng gốc và mặc định so sánh như chuỗi
+
+```js
+[10, 9, 1].sort();                  // [1, 10, 9]  ← so sánh như chuỗi!
+[10, 9, 1].sort((a, b) => a - b);   // [1, 9, 10]
+const sorted = [...arr].sort(...);  // hoặc arr.toSorted(...) để KHÔNG sửa mảng gốc
+```
+
+Sắp xếp theo nhiều tiêu chí:
+
+```js
+items.toSorted((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+```
+
+## Gom nhóm bằng reduce
+
+```js
+const byStatus = orders.reduce((acc, o) => {
+  (acc[o.status] ??= []).push(o);
+  return acc;
+}, {});
+```
+%%% quiz
+? `[10, 9, 1].sort()` cho kết quả gì?
+- [1, 9, 10]
+* [1, 10, 9]
+- [10, 9, 1]
+> Không có hàm so sánh thì sort đổi phần tử thành chuỗi rồi mới so sánh.
+? Hàm nào **sửa** mảng gốc?
+- map
+- filter
+* sort
+%%% hints
+- summarize: `filter` các đơn paid, rồi `reduce` để tính count, revenue và max.
+- topProducts: `flatMap` lấy hết các item, gom số lượng theo `sku` vào một object, rồi `Object.entries(...)`, `toSorted(...)`, `slice(0, n)`.
+- chunk: vòng `for (let i = 0; i < arr.length; i += size)` kết hợp `slice(i, i + size)`.
+%%% starter
+const ORDERS = [
+  { id: 1, status: 'paid', items: [{ sku: 'A', qty: 2, price: 50 }, { sku: 'B', qty: 1, price: 30 }] },
+  { id: 2, status: 'cancelled', items: [{ sku: 'A', qty: 5, price: 50 }] },
+  { id: 3, status: 'paid', items: [{ sku: 'C', qty: 3, price: 10 }, { sku: 'B', qty: 2, price: 30 }] },
+];
+
+/** Tổng tiền 1 đơn = Σ qty * price */
+function orderTotal(order) {
+  return 0; // TODO
+}
+
+/** { count, revenue, maxOrderId } chỉ tính đơn 'paid'; không có đơn paid -> maxOrderId = null */
+function summarize(orders) {
+  return { count: 0, revenue: 0, maxOrderId: null }; // TODO
+}
+
+/** n sku bán chạy nhất (theo qty, chỉ đơn paid) dạng [{ sku, qty }], hoà thì sku tăng dần */
+function topProducts(orders, n) {
+  return []; // TODO
+}
+
+/** chunk([1,2,3,4,5], 2) -> [[1,2],[3,4],[5]] */
+function chunk(arr, size) {
+  return [arr]; // TODO
+}
+
+/** Sắp theo tổng tiền giảm dần, KHÔNG sửa mảng gốc, trả mảng id */
+function idsByTotalDesc(orders) {
+  return orders.sort((a, b) => orderTotal(b) - orderTotal(a)).map((o) => o.id); // TODO: đang sửa mảng gốc!
+}
+
+console.log(summarize(ORDERS));
+%%% tests
+test('orderTotal', () => {
+  expect(orderTotal(ORDERS[0])).toBe(130);
+  expect(orderTotal({ items: [] })).toBe(0);
+});
+
+test('summarize chỉ tính đơn paid', () => {
+  expect(summarize(ORDERS)).toEqual({ count: 2, revenue: 220, maxOrderId: 1 });
+});
+
+test('summarize mảng rỗng', () => {
+  expect(summarize([])).toEqual({ count: 0, revenue: 0, maxOrderId: null });
+});
+
+test('topProducts', () => {
+  expect(topProducts(ORDERS, 2)).toEqual([{ sku: 'B', qty: 3 }, { sku: 'C', qty: 3 }]);
+  expect(topProducts(ORDERS, 10)).toHaveLength(3);
+});
+
+test('chunk', () => {
+  expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  expect(chunk([], 3)).toEqual([]);
+});
+
+test('idsByTotalDesc không sửa mảng gốc', () => {
+  const copy = ORDERS.map((o) => o.id);
+  expect(idsByTotalDesc(ORDERS)).toEqual([2, 1, 3]);
+  expect(ORDERS.map((o) => o.id)).toEqual(copy);
+});
+%%% solution
+const ORDERS = [
+  { id: 1, status: 'paid', items: [{ sku: 'A', qty: 2, price: 50 }, { sku: 'B', qty: 1, price: 30 }] },
+  { id: 2, status: 'cancelled', items: [{ sku: 'A', qty: 5, price: 50 }] },
+  { id: 3, status: 'paid', items: [{ sku: 'C', qty: 3, price: 10 }, { sku: 'B', qty: 2, price: 30 }] },
+];
+
+function orderTotal(order) {
+  return order.items.reduce((sum, it) => sum + it.qty * it.price, 0);
+}
+
+function summarize(orders) {
+  const paid = orders.filter((o) => o.status === 'paid');
+  let max = null;
+  for (const o of paid) if (max === null || orderTotal(o) > orderTotal(max)) max = o;
+  return {
+    count: paid.length,
+    revenue: paid.reduce((s, o) => s + orderTotal(o), 0),
+    maxOrderId: max ? max.id : null,
+  };
+}
+
+function topProducts(orders, n) {
+  const qty = {};
+  for (const it of orders.filter((o) => o.status === 'paid').flatMap((o) => o.items)) {
+    qty[it.sku] = (qty[it.sku] ?? 0) + it.qty;
+  }
+  return Object.entries(qty)
+    .map(([sku, q]) => ({ sku, qty: q }))
+    .toSorted((a, b) => b.qty - a.qty || a.sku.localeCompare(b.sku))
+    .slice(0, n);
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function idsByTotalDesc(orders) {
+  return orders.toSorted((a, b) => orderTotal(b) - orderTotal(a)).map((o) => o.id);
+}
+
+console.log(summarize(ORDERS));

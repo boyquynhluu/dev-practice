@@ -1,0 +1,205 @@
+%%% meta
+id: fe-05
+title: DOM, sự kiện và event delegation (không framework)
+level: core
+topic: DOM
+order: 5
+%%% theory
+## DOM API cơ bản
+
+```js
+const li = document.createElement('li');
+li.dataset.id = '7';                 // <li data-id="7">
+li.className = 'done';               // hoặc li.classList.toggle('done', true)
+li.textContent = title;              // an toàn: luôn hiển thị như chữ
+container.append(li);
+container.querySelector('.title');   // phần tử đầu tiên khớp
+container.querySelectorAll('li');    // NodeList
+el.remove();
+```
+
+## XSS: `innerHTML` và `textContent`
+
+```js
+li.innerHTML = `<span>${title}</span>`;   // ❌ title = '<img src=x onerror=alert(1)>' sẽ chạy script
+span.textContent = title;                  // ✔
+```
+
+Dữ liệu người dùng nhập vào **không bao giờ** được ghép thẳng vào HTML. React tự escape cho bạn, nhưng khi dùng DOM thuần thì bạn phải tự lo.
+
+## Sự kiện và event delegation
+
+Sự kiện **nổi bọt (bubble)** từ phần tử con lên phần tử cha. Thay vì gắn listener cho từng `<li>`, ta gắn **một** listener lên `<ul>`:
+
+```js
+ul.addEventListener('click', (e) => {
+  const li = e.target.closest('li');
+  if (!li) return;
+  if (e.target.matches('button.delete')) remove(li.dataset.id);
+});
+```
+
+Cách này có hai lợi ích: phần tử thêm vào sau vẫn hoạt động, và chỉ tốn đúng một listener dù danh sách có hàng nghìn dòng.
+
+## Form
+
+```js
+form.addEventListener('submit', (e) => {
+  e.preventDefault();                       // chặn reload trang
+  const title = form.elements.title.value.trim();
+});
+```
+
+## Render lại từ state
+
+Cách dễ hiểu nhất: giữ một mảng `todos` làm **nguồn sự thật duy nhất**. Mỗi khi có thay đổi thì gọi `render()` để vẽ lại danh sách từ mảng. Đây chính là ý tưởng mà React tự động hoá.
+%%% quiz
+? Vì sao event delegation vẫn hoạt động với phần tử thêm vào sau?
+* Listener gắn ở phần tử cha, sự kiện của con nổi bọt lên tới nó
+- Vì trình duyệt tự gắn listener cho phần tử mới
+? Hiển thị chuỗi người dùng nhập vào thì dùng gì?
+- innerHTML
+* textContent
+%%% hints
+- Tạo khung một lần: `form`, `ul`, `p.count`. Hàm `render()` xoá rồi vẽ lại các `li` từ mảng `todos`.
+- Mỗi `li` gồm `<input type="checkbox">`, `<span class="title">` (gán bằng `textContent`) và `<button class="delete">`.
+- Listener `click` gắn trên `ul`: dùng `e.target.closest('li')` để tìm id; nếu target là checkbox thì toggle, là nút delete thì xoá.
+- `id` mới: `Math.max(0, ...todos.map((t) => t.id)) + 1`.
+%%% starter
+/**
+ * Dựng todo list trong container:
+ *   <form><input name="title"><button>Thêm</button></form>
+ *   <ul> <li data-id class="done?"><input type="checkbox"><span class="title">…</span><button class="delete">Xoá</button></li> </ul>
+ *   <p class="count">N việc chưa xong</p>
+ * Trả về { getTodos() } (bản sao mảng).
+ */
+function createTodoList(container, initial = []) {
+  let todos = initial.map((t) => ({ ...t }));
+  // TODO: dựng DOM, render, xử lý submit / toggle / delete
+  return { getTodos: () => todos.map((t) => ({ ...t })) };
+}
+%%% tests
+function mount(initial) {
+  const box = document.createElement('div');
+  document.getElementById('test-area').append(box);
+  const api = createTodoList(box, initial);
+  return { box, api };
+}
+
+async function addTodo(box, text) {
+  await type(box.querySelector('input[name="title"]'), text);
+  await submit(box.querySelector('form'));
+}
+
+test('render danh sách ban đầu + số việc chưa xong', () => {
+  const { box } = mount([{ id: 1, title: 'Học DOM', done: false }, { id: 2, title: 'Ngủ', done: true }]);
+  expect(box.querySelectorAll('li')).toHaveLength(2);
+  expect(box.querySelector('li[data-id="2"]').classList.contains('done')).toBe(true);
+  expect(box.querySelector('li[data-id="2"] input[type="checkbox"]').checked).toBe(true);
+  expect(box.querySelector('.count').textContent).toBe('1 việc chưa xong');
+});
+
+test('submit form thêm việc, trim và xoá ô input', async () => {
+  const { box, api } = mount([]);
+  await addTodo(box, '  Viết test  ');
+  expect(api.getTodos()).toEqual([{ id: 1, title: 'Viết test', done: false }]);
+  expect(box.querySelector('input[name="title"]').value).toBe('');
+  expect(box.querySelector('li .title').textContent).toBe('Viết test');
+});
+
+test('bỏ qua nội dung rỗng', async () => {
+  const { box, api } = mount([]);
+  await addTodo(box, '   ');
+  expect(api.getTodos()).toHaveLength(0);
+});
+
+test('toggle bằng checkbox (cả với việc thêm sau)', async () => {
+  const { box, api } = mount([{ id: 1, title: 'A', done: false }]);
+  await addTodo(box, 'B');
+  await click(box.querySelector('li[data-id="2"] input[type="checkbox"]'));
+  expect(api.getTodos()[1].done).toBe(true);
+  expect(box.querySelector('li[data-id="2"]').classList.contains('done')).toBe(true);
+  expect(box.querySelector('.count').textContent).toBe('1 việc chưa xong');
+});
+
+test('xoá', async () => {
+  const { box, api } = mount([{ id: 1, title: 'A', done: false }, { id: 2, title: 'B', done: false }]);
+  await click(box.querySelector('li[data-id="1"] .delete'));
+  expect(api.getTodos().map((t) => t.id)).toEqual([2]);
+  expect(box.querySelectorAll('li')).toHaveLength(1);
+});
+
+test('chống XSS: tiêu đề chứa HTML hiển thị như chữ', async () => {
+  const { box } = mount([]);
+  await addTodo(box, '<img src=x onerror="window.__xss=1">');
+  expect(box.querySelector('li img')).toBeNull();
+  expect(box.querySelector('li .title').textContent).toBe('<img src=x onerror="window.__xss=1">');
+});
+
+test('getTodos trả bản sao', () => {
+  const { api } = mount([{ id: 1, title: 'A', done: false }]);
+  api.getTodos()[0].done = true;
+  expect(api.getTodos()[0].done).toBe(false);
+});
+%%% solution
+function createTodoList(container, initial = []) {
+  let todos = initial.map((t) => ({ ...t }));
+
+  const form = document.createElement('form');
+  const input = document.createElement('input');
+  input.name = 'title';
+  input.placeholder = 'Việc cần làm…';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = 'Thêm';
+  form.append(input, addBtn);
+  const ul = document.createElement('ul');
+  const count = document.createElement('p');
+  count.className = 'count';
+  container.append(form, ul, count);
+
+  function render() {
+    ul.replaceChildren(...todos.map((t) => {
+      const li = document.createElement('li');
+      li.dataset.id = String(t.id);
+      li.classList.toggle('done', t.done);
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = t.done;
+      const span = document.createElement('span');
+      span.className = 'title';
+      span.textContent = t.title;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'delete';
+      del.textContent = 'Xoá';
+      li.append(cb, span, del);
+      return li;
+    }));
+    count.textContent = `${todos.filter((t) => !t.done).length} việc chưa xong`;
+  }
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const title = input.value.trim();
+    if (!title) return;
+    todos = [...todos, { id: Math.max(0, ...todos.map((t) => t.id)) + 1, title, done: false }];
+    input.value = '';
+    render();
+  });
+
+  ul.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    const id = Number(li.dataset.id);
+    if (e.target.matches('input[type="checkbox"]')) {
+      todos = todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
+      render();
+    } else if (e.target.matches('button.delete')) {
+      todos = todos.filter((t) => t.id !== id);
+      render();
+    }
+  });
+
+  render();
+  return { getTodos: () => todos.map((t) => ({ ...t })) };
+}

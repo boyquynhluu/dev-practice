@@ -1,0 +1,205 @@
+%%% meta
+id: fe-12
+title: Custom hook — useDebounce, useLocalStorage, usePrevious
+level: advanced
+topic: React
+order: 12
+%%% theory
+## Custom hook là gì?
+
+Custom hook là một hàm tên bắt đầu bằng `use`, bên trong gọi các hook khác. Mục đích là **tái sử dụng logic có state**, chứ không phải tái sử dụng UI.
+
+```jsx
+function useToggle(initial = false) {
+  const [on, setOn] = useState(initial);
+  const toggle = useCallback(() => setOn((v) => !v), []);
+  return [on, toggle];
+}
+```
+
+Mỗi component gọi hook sẽ có **state riêng**. Hook chia sẻ logic, không chia sẻ dữ liệu.
+
+## Quy tắc của hook
+
+1. Chỉ gọi ở **tầng trên cùng** của component hoặc của hook. Không gọi trong `if`, vòng lặp hay callback.
+2. Chỉ gọi trong component React hoặc trong một custom hook khác.
+
+React dựa vào **thứ tự gọi** để biết state nào thuộc về hook nào.
+
+## useRef: giá trị sống qua nhiều lần render mà không gây render lại
+
+```jsx
+const prev = useRef();
+useEffect(() => { prev.current = value; });   // cập nhật sau mỗi lần render
+```
+
+## localStorage: nhớ xử lý lỗi
+
+`localStorage` có thể **ném lỗi** (chế độ ẩn danh, hết quota), và dữ liệu đọc ra có thể là **JSON hỏng**. Hãy bọc `try/catch` và có giá trị mặc định dự phòng.
+
+## Lazy initial state
+
+```jsx
+useState(() => expensiveRead())   // hàm chỉ chạy ở lần render đầu tiên
+```
+%%% quiz
+? Hai component cùng gọi `useToggle()` thì chúng có dùng chung state không?
+- Có
+* Không, mỗi lần gọi có state riêng
+? Vì sao không được gọi hook bên trong `if`?
+* React dựa vào thứ tự gọi hook giữa các lần render
+- Vì sẽ chạy chậm
+%%% hints
+- useDebounce: `useState(value)` kết hợp `useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t); }, [value, ms])`.
+- useLocalStorage: state khởi tạo lazy đọc từ `localStorage.getItem(key)`, có try/catch quanh `JSON.parse`. Setter nhận được cả giá trị lẫn hàm (`typeof next === 'function' ? next(prev) : next`), sau đó ghi `JSON.stringify`.
+- usePrevious: `useRef`, cập nhật trong `useEffect`, trả `ref.current`.
+%%% starter
+function useDebounce(value, ms) {
+  return value; // TODO
+}
+
+function useLocalStorage(key, initial) {
+  return useState(initial); // TODO: đọc/ghi localStorage
+}
+
+function usePrevious(value) {
+  return undefined; // TODO
+}
+
+function App() {
+  const [text, setText] = useLocalStorage('demo-text', '');
+  const debounced = useDebounce(text, 400);
+  const prev = usePrevious(debounced);
+  return (
+    <div>
+      <input value={text} onChange={(e) => setText(e.target.value)} placeholder="gõ thử…" />
+      <p>debounced: {debounced}</p>
+      <p>trước đó: {prev}</p>
+    </div>
+  );
+}
+%%% tests
+function DebounceView({ value }) {
+  return <p className="v">{useDebounce(value, 50)}</p>;
+}
+
+function StoreView({ k, initial }) {
+  const [v, setV] = useLocalStorage(k, initial);
+  return (
+    <div>
+      <p className="v">{JSON.stringify(v)}</p>
+      <button className="inc" onClick={() => setV((x) => ({ ...x, n: x.n + 1 }))}>+</button>
+      <button className="set" onClick={() => setV({ n: 100 })}>set</button>
+    </div>
+  );
+}
+
+function PrevView({ value }) {
+  const prev = usePrevious(value);
+  return <p className="v">{String(prev)}</p>;
+}
+
+test('useDebounce trả giá trị đầu ngay, giá trị mới sau ms', async () => {
+  const { container, rerender } = await render(<DebounceView value="a" />);
+  expect($('.v', container).textContent).toBe('a');
+  await rerender(<DebounceView value="ab" />);
+  await rerender(<DebounceView value="abc" />);
+  expect($('.v', container).textContent).toBe('a');
+  await flush(80);
+  expect($('.v', container).textContent).toBe('abc');
+});
+
+test('useDebounce reset timer khi giá trị đổi liên tục', async () => {
+  const { container, rerender } = await render(<DebounceView value="1" />);
+  for (const v of ['2', '3', '4']) {
+    await rerender(<DebounceView value={v} />);
+    await flush(30);
+  }
+  expect($('.v', container).textContent).toBe('1');
+  await flush(60);
+  expect($('.v', container).textContent).toBe('4');
+});
+
+test('useLocalStorage dùng initial khi chưa có', async () => {
+  const { container } = await render(<StoreView k="t1" initial={{ n: 1 }} />);
+  expect($('.v', container).textContent).toBe('{"n":1}');
+});
+
+test('useLocalStorage ghi và đọc lại (setter dạng hàm và giá trị)', async () => {
+  const { container, unmount } = await render(<StoreView k="t2" initial={{ n: 1 }} />);
+  await click($('.inc', container));
+  await click($('.inc', container));
+  expect(JSON.parse(localStorage.getItem('t2'))).toEqual({ n: 3 });
+  await click($('.set', container));
+  await unmount();
+  const again = await render(<StoreView k="t2" initial={{ n: 1 }} />);
+  expect($('.v', again.container).textContent).toBe('{"n":100}');
+});
+
+test('useLocalStorage JSON hỏng -> initial, không crash', async () => {
+  localStorage.setItem('t3', '{hỏng');
+  const { container } = await render(<StoreView k="t3" initial={{ n: 7 }} />);
+  expect($('.v', container).textContent).toBe('{"n":7}');
+});
+
+test('usePrevious', async () => {
+  const { container, rerender } = await render(<PrevView value={1} />);
+  expect($('.v', container).textContent).toBe('undefined');
+  await rerender(<PrevView value={2} />);
+  expect($('.v', container).textContent).toBe('1');
+  await rerender(<PrevView value={5} />);
+  expect($('.v', container).textContent).toBe('2');
+});
+%%% solution
+function useDebounce(value, ms) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return debounced;
+}
+
+function useLocalStorage(key, initial) {
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? initial : JSON.parse(raw);
+    } catch {
+      return initial;
+    }
+  });
+  const set = useCallback((next) => {
+    setValue((prev) => {
+      const v = typeof next === 'function' ? next(prev) : next;
+      try {
+        localStorage.setItem(key, JSON.stringify(v));
+      } catch {
+        /* quota / private mode */
+      }
+      return v;
+    });
+  }, [key]);
+  return [value, set];
+}
+
+function usePrevious(value) {
+  const ref = useRef(undefined);
+  useEffect(() => {
+    ref.current = value;
+  });
+  return ref.current;
+}
+
+function App() {
+  const [text, setText] = useLocalStorage('demo-text', '');
+  const debounced = useDebounce(text, 400);
+  const prev = usePrevious(debounced);
+  return (
+    <div>
+      <input value={text} onChange={(e) => setText(e.target.value)} placeholder="gõ thử…" />
+      <p>debounced: {debounced}</p>
+      <p>trước đó: {prev}</p>
+    </div>
+  );
+}

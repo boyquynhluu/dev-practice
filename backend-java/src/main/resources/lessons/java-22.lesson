@@ -1,0 +1,98 @@
+%%% meta
+id: java-22
+title: Indexing — B+Tree, clustered index và covering index
+level: intermediate
+topic: Indexing
+order: 22
+%%% theory
+## Vì sao index nhanh
+
+Không có index, MySQL phải **quét toàn bảng** (full table scan, O(n)). Index của InnoDB là **B+Tree**:
+
+- Cây thấp và rộng. Mỗi node là một trang 16 KB chứa hàng trăm khoá, nên bảng 100 triệu dòng cũng chỉ sâu khoảng **3–4 tầng**. Tìm một dòng tốn khoảng 3–4 lần đọc trang, mà các trang ở tầng trên thường đã nằm sẵn trong buffer pool.
+- **Chỉ node lá mới chứa dữ liệu**, và các lá được **nối với nhau thành danh sách liên kết** theo thứ tự khoá. Nhờ vậy quét theo khoảng (`BETWEEN`, `>`, `ORDER BY`) chỉ cần đi dọc các lá.
+
+## Clustered index và secondary index (InnoDB)
+
+- **Clustered index chính là bảng.** Lá của cây khoá chính (PRIMARY KEY) chứa **toàn bộ dòng**. Mỗi bảng chỉ có đúng một clustered index. Dữ liệu được sắp vật lý theo PK.
+- **Secondary index**: lá chứa `(cột được index, giá trị PK)`. Tìm theo secondary index nghĩa là đi cây phụ để lấy PK, rồi **đi tiếp cây PK để lấy cả dòng**. Bước sau gọi là *bookmark lookup*.
+
+Hệ quả:
+- PK nên **ngắn và tăng dần** (`BIGINT AUTO_INCREMENT`, UUIDv7). UUIDv4 ngẫu nhiên làm chèn vào giữa cây, gây **tách trang** (page split) và làm phình mọi secondary index, vì index nào cũng chứa PK.
+- Không có PK thì InnoDB tự tạo một khoá ẩn 6 byte. Luôn nên khai báo PK.
+
+## Composite index và quy tắc tiền tố trái nhất
+
+Index `(customer_id, status, created_at)` được sắp theo customer_id, rồi status, rồi created_at, giống danh bạ điện thoại sắp theo họ rồi tên.
+
+| Query | Dùng index? |
+|---|---|
+| `WHERE customer_id = ?` | ✔ |
+| `WHERE customer_id = ? AND status = ?` | ✔ |
+| `WHERE customer_id = ? AND status = ? ORDER BY created_at` | ✔, không cần sort thêm |
+| `WHERE status = ?` | ✘, thiếu cột đầu |
+| `WHERE customer_id = ? AND created_at > ?` | dùng được phần `customer_id`, còn created_at chỉ để lọc |
+| `WHERE customer_id > ? AND status = ?` | điều kiện khoảng ở cột trước làm các cột sau **không dùng được để seek** |
+
+Quy tắc xếp cột: các cột so sánh **bằng** (`=`) đặt trước, cột **khoảng hoặc sắp xếp** đặt sau cùng.
+
+## Covering index
+
+Nếu index **chứa đủ mọi cột** mà query cần thì MySQL không phải đọc dòng gốc. `EXPLAIN` sẽ hiện `Extra: Using index`.
+
+```sql
+CREATE INDEX idx_orders_cust_created ON orders (customer_id, created_at, total);
+SELECT created_at, total FROM orders WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 20;
+```
+
+## Khi nào index không được dùng
+
+- Bọc cột trong hàm: `WHERE DATE(created_at) = '2026-11-24'`. Hãy viết thành khoảng: `created_at >= '2026-11-24' AND created_at < '2026-11-25'`.
+- Ép kiểu ngầm: cột `VARCHAR phone` mà so sánh `WHERE phone = 0912…` (kiểu số).
+- `LIKE '%abc'`, vì có wildcard ở đầu.
+- Độ chọn lọc thấp (cột `is_deleted` chỉ có 2 giá trị). Optimizer sẽ chọn quét toàn bảng.
+
+## Đọc EXPLAIN
+
+| Cột | Cần nhìn gì |
+|---|---|
+| `type` | `const`/`eq_ref`/`ref`/`range` thì tốt. `index` là quét toàn bộ index. `ALL` là quét toàn bảng |
+| `key` | Index thực sự được dùng |
+| `rows` | Số dòng ước tính phải đọc |
+| `Extra` | `Using index` thì tốt. `Using filesort` và `Using temporary` thì cần xem lại |
+
+**Cái giá:** mỗi index làm chậm `INSERT/UPDATE/DELETE` và tốn thêm dung lượng. Chỉ tạo index cho các query thật sự hay chạy.
+%%% quiz
+? Tìm một dòng theo secondary index trong InnoDB thì MySQL làm những bước nào?
+- Đọc thẳng dòng từ lá của secondary index
+* Lấy PK từ lá của secondary index, rồi tra tiếp cây clustered (PK) để lấy cả dòng
+- Quét toàn bảng
+> Lá của secondary index chỉ chứa cột được index và PK. Cột nào không có trong index thì phải đọc từ clustered index.
+? Index `(customer_id, status)`. Query nào KHÔNG dùng được index để seek?
+- `WHERE customer_id = 5`
+- `WHERE customer_id = 5 AND status = 'PAID'`
+* `WHERE status = 'PAID'`
+? Vì sao dùng UUIDv4 ngẫu nhiên làm PK của InnoDB thường kém?
+* Vì chèn vào vị trí ngẫu nhiên gây tách trang, và PK 16 byte làm phình mọi secondary index
+- Vì MySQL không hỗ trợ UUID
+- Vì UUID không duy nhất
+? `EXPLAIN` hiện `Extra: Using index`. Điều đó nghĩa là gì?
+- Query không dùng index
+* Covering index: mọi cột cần đều có trong index, không phải đọc dòng gốc
+- Index bị hỏng
+? `WHERE DATE(created_at) = '2026-11-24'` không dùng được index trên `created_at`. Viết lại thế nào?
+- `WHERE created_at LIKE '2026-11-24%'`
+* `WHERE created_at >= '2026-11-24' AND created_at < '2026-11-25'`
+- Thêm `FORCE INDEX` là đủ
+? Index `(a, b, c)`, query `WHERE a = 1 AND b > 10 AND c = 3`. Cột nào dùng được để seek?
+- Cả a, b và c
+* a và b. Vì b là điều kiện khoảng nên c chỉ còn để lọc
+- Chỉ c
+%%% hints
+- Chạy MySQL bằng Docker: `docker run -d --name mysql -e MYSQL_ROOT_PASSWORD=root -p 3306:3306 mysql:8`. Tạo bảng `orders(id, customer_id, status, created_at, total)` rồi sinh khoảng 1 triệu dòng bằng recursive CTE.
+- Chạy `EXPLAIN ANALYZE SELECT ... WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 20` trước và sau khi tạo index `(customer_id, created_at)`. So sánh `type`, `rows` và thời gian.
+- Thêm `total` vào index để query thành covering index, rồi xem `Extra` đổi sang `Using index`.
+- Thử `WHERE DATE(created_at) = ...` và câu đã viết lại thành khoảng, rồi so sánh hai kết quả EXPLAIN.
+%%% starter
+%%% tests
+%%% solution
